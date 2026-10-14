@@ -62,7 +62,7 @@ def test_generate_conformers_from_pose_returns_conformers():
     assert all(np.isfinite(e) for e in ensemble.energies)
 
 
-def test_free_atoms_do_move():
+def test_free_atoms_do_move() -> None:
     """At least one free (non-constrained) atom should differ across conformers."""
     from openconf import generate_conformers_from_pose
 
@@ -76,7 +76,8 @@ def test_free_atoms_do_move():
     all_positions = []
     for rec in ensemble.records:
         conf = ensemble.mol.GetConformer(rec.conf_id)
-        pos = np.array([conf.GetAtomPosition(i) for i in free_atoms])
+        points = [conf.GetAtomPosition(i) for i in free_atoms]
+        pos = np.array([(point.x, point.y, point.z) for point in points])
         all_positions.append(pos)
 
     # At least two conformers should differ in at least one free atom
