@@ -38,8 +38,11 @@ class NvMolKitEmbedder:
         """Embed conformers and return their identifiers.
 
         Raises:
-            OpenConfValueError: nvMolKit installation is unavailable
+            OpenConfValueError: molecule has disconnected fragments or nvMolKit is unavailable
         """
+        if len(Chem.GetMolFrags(mol)) > 1:
+            raise OpenConfValueError("nvMolKit embedding does not support separate fragment embedding.")
+
         try:
             module = import_module("nvmolkit.embedMolecules")
         except ImportError as exc:

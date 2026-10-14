@@ -43,6 +43,14 @@ def test_nvmolkit_embedding_enables_random_coordinates(monkeypatch: pytest.Monke
     assert conf_ids
 
 
+def test_nvmolkit_embedding_rejects_disconnected_fragments() -> None:
+    """NvMolKit embedding rejects inputs whose fragment treatment would differ."""
+    mol = Chem.AddHs(Chem.MolFromSmiles("CCO.Cl"))
+
+    with pytest.raises(OpenConfValueError):
+        NvMolKitEmbedder().embed(mol, 1, AllChem.ETKDGv3())
+
+
 def test_nvmolkit_minimization_rejects_partial_conformer_batches() -> None:
     """NvMolKit minimization refuses to mutate unrequested conformers."""
     mol = Chem.AddHs(Chem.MolFromSmiles("CCO"))
