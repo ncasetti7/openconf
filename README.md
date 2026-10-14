@@ -26,10 +26,20 @@ uv pip install openconf
 ### Experimental GPU Backend
 
 The development version can use NVIDIA nvMolKit for ETKDG embedding and
-unconstrained batch MMFF optimization. Follow the
+unconstrained batch MMFF optimization. nvMolKit requires Linux, an NVIDIA GPU
+with compute capability 7.0 or newer, and a CUDA 12-compatible driver (version
+560.28 or newer). Install the optional dependency with a PyTorch backend
+supported by the host driver:
+
+```bash
+uv sync --extra gpu --torch-backend=cu128
+```
+
+Replace `cu128` when the host driver requires another supported CUDA 12
+backend. See the
 [nvMolKit installation guide](https://nvidia-bionemo.github.io/nvMolKit/#installation)
-to install a CUDA-compatible build for the active RDKit version, then select
-the backend explicitly:
+for pip, conda, and RDKit-pinned installation options. Select the backend
+explicitly after installation:
 
 ```python
 from openconf import ConformerConfig, generate_conformers
@@ -43,6 +53,16 @@ backend currently leaves single-conformer, constrained, low-mode, and UFF
 fallback minimization on the CPU. nvMolKit requires random-coordinate ETKDG and
 does not support coordinate maps, custom bounds matrices, or separate fragment
 embedding; unsupported inputs fail without silently switching backends.
+
+GPU integration can be checked on a Slurm cluster with the included validation
+job. Supply the site-specific GPU partition or account at submission time:
+
+```bash
+sbatch --partition=GPU_PARTITION gpu_validation/engaging.sbatch
+```
+
+The job refuses to run outside Slurm or without an assigned GPU and writes both
+CPU and GPU results to `openconf-gpu-JOB_ID.json`.
 
 ## Quick Start
 

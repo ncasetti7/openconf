@@ -12,6 +12,11 @@ dependencies = [
     "rdkit",
 ]
 
+[project.optional-dependencies]
+gpu = [
+    "nvmolkit>=0.6,<0.7",
+]
+
 [dependency-groups]
 dev = [
     "ipython",
