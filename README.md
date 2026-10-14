@@ -54,16 +54,6 @@ fallback minimization on the CPU. nvMolKit requires random-coordinate ETKDG and
 does not support coordinate maps, custom bounds matrices, or separate fragment
 embedding; unsupported inputs fail without silently switching backends.
 
-GPU integration can be checked on a Slurm cluster with the included validation
-job. Supply the site-specific GPU partition or account at submission time:
-
-```bash
-sbatch --partition=GPU_PARTITION gpu_validation/engaging.sbatch
-```
-
-The job refuses to run outside Slurm or without an assigned GPU and writes both
-CPU and GPU results to `openconf-gpu-JOB_ID.json`.
-
 ## Quick Start
 
 ### Python API
