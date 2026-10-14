@@ -12,6 +12,7 @@ from rdkit.Geometry import rdGeometry
 from ..config import ConformerConfig, ConstraintSpec
 from ..constraints import ConstraintModel, minimize_with_constraints
 from ..dedupe import rmsd_dedupe
+from ..embedding import get_embedder
 from ..exceptions import OpenConfValueError
 from ..perceive import RotorModel, _is_metal, filter_constrained_rotors
 from ..pool import ConformerPool
@@ -132,6 +133,7 @@ class HybridProposer:
         self.torsion_lib = torsion_lib
         self.config = config
         self.stats = stats
+        self.embedder = get_embedder(config.backend)
 
         self._metal_atom_indices: frozenset[int] = frozenset(a.GetIdx() for a in mol.GetAtoms() if _is_metal(a))
         metal_constraints = ConstraintModel.from_metal_shell(mol, self._metal_atom_indices)
@@ -274,16 +276,18 @@ class HybridProposer:
 
         embed_start = time.perf_counter()
         try:
-            conf_ids = list(AllChem.EmbedMultipleConfs(self.mol, numConfs=n_seeds, params=params))
+            conf_ids = self.embedder.embed(self.mol, n_seeds, params)
         except RuntimeError:
+            if self.config.backend == "nvmolkit":
+                raise
             conf_ids = []
-        if not conf_ids:
+        if not conf_ids and self.config.backend == "rdkit":
             # ETKDG failed (common for organometallics where distance-bound tables
             # don't cover the metal). Fall back to random starting coordinates and
             # let UFF minimization produce a reasonable geometry.
             params.useRandomCoords = True
             try:
-                conf_ids = list(AllChem.EmbedMultipleConfs(self.mol, numConfs=n_seeds, params=params))
+                conf_ids = self.embedder.embed(self.mol, n_seeds, params)
             except RuntimeError:
                 conf_ids = []
         self._add_time_stat("seed_embedding_time_s", time.perf_counter() - embed_start)
@@ -306,7 +310,14 @@ class HybridProposer:
 
         if mmff_props is not None and not self.constraint_model.has_constraints:
             minimize_start = time.perf_counter()
-            energies = minimize_confs_mmff(self.mol, mmff_props, conf_ids, max_its, nthreads)
+            energies = minimize_confs_mmff(
+                self.mol,
+                mmff_props,
+                conf_ids,
+                max_its,
+                nthreads,
+                backend=self.config.backend,
+            )
             self._add_time_stat("seed_minimization_time_s", time.perf_counter() - minimize_start)
             seed_results = list(zip(conf_ids, energies, strict=True))
         else:
@@ -811,6 +822,7 @@ class HybridProposer:
                 stage_ids,
                 max_its,
                 nthreads,
+                backend=self.config.backend,
             )
         else:
             energies = [self._minimize_uff_single(self._staging_mol, sid, max_its) for sid in stage_ids]
@@ -853,7 +865,14 @@ class HybridProposer:
         mmff_props = AllChem.MMFFGetMoleculeProperties(mol, mmffVariant=variant)
         if mmff_props is not None:
             mmff_props.SetMMFFDielectricConstant(dielectric)
-            return minimize_confs_mmff(mol, mmff_props, final_ids, max_iters, num_threads)
+            return minimize_confs_mmff(
+                mol,
+                mmff_props,
+                final_ids,
+                max_iters,
+                num_threads,
+                backend=self.config.backend,
+            )
 
         return [self._minimize_uff_single(mol, cid, int(max_iters)) for cid in final_ids]
 

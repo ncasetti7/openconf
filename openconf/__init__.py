@@ -9,6 +9,7 @@ from .api import (
 from .config import (
     AngleConstraintSpec,
     BondConstraintSpec,
+    ComputeBackend,
     ConformerConfig,
     ConformerPreset,
     ConstraintSpec,
@@ -25,6 +26,7 @@ from .torsionlib import TorsionLibrary, TorsionRule
 __all__ = [
     "AngleConstraintSpec",
     "BondConstraintSpec",
+    "ComputeBackend",
     "ConformerConfig",
     "ConformerEnsemble",
     "ConformerPreset",

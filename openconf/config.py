@@ -16,6 +16,7 @@ ConformerPreset = Literal[
     "macrocycle",
     "transition_metal",
 ]
+ComputeBackend = Literal["rdkit", "nvmolkit"]
 _SUPPORTED_MOVE_TYPES = frozenset(
     {
         "single_rotor",
@@ -236,6 +237,8 @@ class ConformerConfig:
     """Configuration for conformer generation.
 
     Attributes:
+        backend: compute backend for ETKDG embedding and unconstrained batch
+            MMFF minimization.
         max_out: Maximum number of conformers to return.
         pool_max: Maximum pool size during generation.
         n_seeds: initial ETKDG seed conformer count. When None (default),
@@ -439,8 +442,11 @@ class ConformerConfig:
     low_mode_scan_max_steps: int = 10
     low_mode_n_source_seeds: int = 1
     tm_seed_move_attempts: int = 0
+    backend: ComputeBackend = "rdkit"
 
     def __post_init__(self) -> None:
+        if self.backend not in {"rdkit", "nvmolkit"}:
+            raise OpenConfValueError(f"Unsupported compute backend: {self.backend!r}.")
         _require_at_least("max_out", self.max_out, 1)
         _require_optional_at_least("pool_max", self.pool_max, 1)
         _require_optional_at_least("n_seeds", self.n_seeds, 1)

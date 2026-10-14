@@ -23,6 +23,27 @@
 uv pip install openconf
 ```
 
+### Experimental GPU Backend
+
+The development version can use NVIDIA nvMolKit for ETKDG embedding and
+unconstrained batch MMFF optimization. Follow the
+[nvMolKit installation guide](https://nvidia-bionemo.github.io/nvMolKit/#installation)
+to install a CUDA-compatible build for the active RDKit version, then select
+the backend explicitly:
+
+```python
+from openconf import ConformerConfig, generate_conformers
+
+config = ConformerConfig(backend="nvmolkit")
+ensemble = generate_conformers("CCCCc1ccccc1", config=config)
+```
+
+RDKit remains the default and requires no GPU dependencies. The experimental
+backend currently leaves single-conformer, constrained, low-mode, and UFF
+fallback minimization on the CPU. nvMolKit requires random-coordinate ETKDG and
+does not support coordinate maps, custom bounds matrices, or separate fragment
+embedding; unsupported inputs fail without silently switching backends.
+
 ## Quick Start
 
 ### Python API

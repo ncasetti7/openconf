@@ -1,13 +1,17 @@
 """Relaxation and minimization backends for conformer generation."""
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from importlib import import_module
+from typing import TYPE_CHECKING, Protocol, cast
 
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
 from .constraints import ConstraintModel, minimize_with_constraints
 from .exceptions import OpenConfValueError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class Minimizer(Protocol):
@@ -101,14 +105,13 @@ def minimize_confs_mmff(
     max_iters: int,
     num_threads: int = 0,
     variant: str = "MMFF94s",
+    backend: str = "rdkit",
 ) -> list[float]:
     """Minimize conformers and return energies evaluated with mmff_props.
 
-    Uses MMFFOptimizeMoleculeConfs for parallel C++ geometry minimization, then
-    re-evaluates each conformer's energy with the pre-prepared mmff_props (which
-    carries the custom dielectric). This recovers the C++ parallelism that would
-    be lost by a per-conformer Python loop, while still reporting energies that
-    reflect the requested dielectric constant.
+    Uses selected batch optimizer for geometry minimization, then re-evaluates
+    each conformer's energy with pre-prepared properties carrying the custom
+    dielectric.
 
     Note: geometries are at the default-dielectric (ε=1) MMFF minimum; the custom
     dielectric is applied only to the energy evaluation. For the coarse fast-
@@ -121,6 +124,7 @@ def minimize_confs_mmff(
         max_iters: maximum minimization iterations
         num_threads: C++ threads for MMFFOptimizeMoleculeConfs; 0 means all available
         variant: MMFF variant string passed to MMFFOptimizeMoleculeConfs
+        backend: compute backend name
 
     Returns:
         Energies in kcal/mol aligned to `conf_ids`
@@ -128,9 +132,14 @@ def minimize_confs_mmff(
     if not conf_ids:
         return []
 
-    AllChem.MMFFOptimizeMoleculeConfs(
-        mol, numThreads=int(num_threads or 0), maxIters=int(max_iters), mmffVariant=variant
-    )
+    if backend == "rdkit":
+        AllChem.MMFFOptimizeMoleculeConfs(
+            mol, numThreads=int(num_threads or 0), maxIters=int(max_iters), mmffVariant=variant
+        )
+    elif backend == "nvmolkit":
+        _minimize_confs_nvmolkit(mol, conf_ids, max_iters, variant)
+    else:
+        raise OpenConfValueError(f"Unsupported compute backend: {backend!r}.")
 
     return [
         float(ff.CalcEnergy())
@@ -138,6 +147,33 @@ def minimize_confs_mmff(
         else float("inf")
         for cid in conf_ids
     ]
+
+
+def _minimize_confs_nvmolkit(
+    mol: Chem.Mol,
+    conf_ids: list[int],
+    max_iters: int,
+    variant: str,
+) -> None:
+    """Minimize all molecule conformers with nvMolKit."""
+    molecule_conf_ids = [conformer.GetId() for conformer in mol.GetConformers()]
+    if len(molecule_conf_ids) != len(conf_ids) or set(molecule_conf_ids) != set(conf_ids):
+        raise OpenConfValueError("nvMolKit batch minimization requires conf_ids to include every molecule conformer.")
+
+    try:
+        module = import_module("nvmolkit.mmffOptimization")
+    except ImportError as exc:
+        raise OpenConfValueError("backend='nvmolkit' requires a compatible nvMolKit installation.") from exc
+
+    optimize = cast("Callable[..., list[list[float]]]", module.MMFFOptimizeMoleculesConfs)
+    optimization_props = AllChem.MMFFGetMoleculeProperties(mol, mmffVariant=variant)
+    if optimization_props is None:
+        raise OpenConfValueError(f"Molecule has no {variant} parameters.")
+    optimize(
+        molecules=[mol],
+        maxIters=int(max_iters),
+        properties=optimization_props,
+    )
 
 
 def get_minimizer(
