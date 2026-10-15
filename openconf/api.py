@@ -418,7 +418,7 @@ def generate_conformers(
     if isinstance(mol, str):
         from .io import smiles_to_mol
 
-        mol = smiles_to_mol(mol)
+        mol = smiles_to_mol(mol, add_hs=False)
 
     if preset is not None:
         config = preset_config(preset)
