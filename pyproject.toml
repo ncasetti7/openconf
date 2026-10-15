@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gpu = [
-    "nvmolkit>=0.6,<0.7",
+    "nvmolkit>=0.6,<0.8",
 ]
 
 [dependency-groups]

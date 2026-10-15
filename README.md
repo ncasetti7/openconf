@@ -52,6 +52,20 @@ ensembles = generate_conformers_batch(
 )
 ```
 
+FIRE minimization and single-precision GPU arithmetic are optional experimental
+settings:
+
+```python
+config = ConformerConfig(
+    backend="nvmolkit",
+    nvmolkit_minimizer="fire",
+    nvmolkit_precision="single",
+)
+```
+
+Full-precision BFGS remains the default. FIRE requires nvMolKit 0.6 or newer;
+single precision requires nvMolKit 0.7 or a compatible development build.
+
 Use `generate_conformers_batch()` for GPU throughput workloads. It preserves
 input order and groups molecules with compatible seed counts and ETKDG settings
 into shared nvMolKit embedding, seed-MMFF, and proposal-MMFF calls. Molecules

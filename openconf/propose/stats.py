@@ -14,6 +14,8 @@ def new_generation_stats() -> dict[str, GenerationStat]:
     """Create an empty generation-stats mapping."""
     return {
         "compute_backend": "",
+        "nvmolkit_minimizer": "",
+        "nvmolkit_precision": "",
         "topology_tuned_defaults_applied": 0,
         "seed_plan_reason": "",
         "seed_plan_base_n_seeds": 0,
@@ -79,6 +81,8 @@ def populate_effective_config_stats(
 
     stats["topology_tuned_defaults_applied"] = int(tuned_defaults_applied)
     stats["compute_backend"] = config.backend
+    stats["nvmolkit_minimizer"] = config.nvmolkit_minimizer
+    stats["nvmolkit_precision"] = config.nvmolkit_precision
     stats["effective_seed_n_per_rotor"] = config.seed_n_per_rotor
     stats["effective_seed_prune_rms_thresh"] = seed_prune_rms_thresh
     stats["effective_seed_minimization_iters"] = config.seed_minimization_iters

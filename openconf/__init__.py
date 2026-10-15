@@ -15,6 +15,8 @@ from .config import (
     ConformerConfig,
     ConformerPreset,
     ConstraintSpec,
+    NvMolKitMinimizer,
+    NvMolKitPrecision,
     TorsionConstraintSpec,
     preset_config,
 )
@@ -34,6 +36,8 @@ __all__ = [
     "ConformerPreset",
     "ConformerRecord",
     "ConstraintSpec",
+    "NvMolKitMinimizer",
+    "NvMolKitPrecision",
     "OpenConfError",
     "OpenConfRuntimeError",
     "OpenConfValueError",

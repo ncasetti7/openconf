@@ -160,6 +160,7 @@ class SeedEmbeddingProfile:
     use_small_ring_torsions: bool
     use_macrocycle_torsions: bool
     use_basic_knowledge: bool
+    nvmolkit_precision: str
 
     def parameters(self) -> rdDistGeom.EmbedParameters:
         """Build RDKit embedding parameters for this profile."""
@@ -213,6 +214,7 @@ def seed_embedding_profile(
         use_small_ring_torsions=bool(ring_info.get("has_small_ring")),
         use_macrocycle_torsions=has_macrocycle and macrocycle_tuning.use_macrocycle_torsions,
         use_basic_knowledge=has_macrocycle and macrocycle_tuning.use_basic_knowledge,
+        nvmolkit_precision=config.nvmolkit_precision,
     )
 
 

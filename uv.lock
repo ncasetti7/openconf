@@ -693,7 +693,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "numpy" },
-    { name = "nvmolkit", marker = "extra == 'gpu'", specifier = ">=0.6,<0.7" },
+    { name = "nvmolkit", marker = "extra == 'gpu'", specifier = ">=0.6,<0.8" },
     { name = "rdkit" },
 ]
 provides-extras = ["gpu"]

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
+from ._nvmolkit import precision_kwargs
 from .constraints import ConstraintModel, minimize_with_constraints
 from .exceptions import OpenConfValueError
 
@@ -106,6 +107,8 @@ def minimize_confs_mmff(
     num_threads: int = 0,
     variant: str = "MMFF94s",
     backend: str = "rdkit",
+    minimizer_kind: str = "bfgs",
+    precision: str = "full",
 ) -> list[float]:
     """Minimize conformers and return energies evaluated with mmff_props.
 
@@ -124,6 +127,8 @@ def minimize_confs_mmff(
         num_threads: C++ threads for MMFFOptimizeMoleculeConfs; 0 means all available
         variant: MMFF variant string passed to MMFFOptimizeMoleculeConfs
         backend: compute backend name
+        minimizer_kind: nvMolKit minimizer name
+        precision: nvMolKit arithmetic precision
 
     Returns:
         Energies in kcal/mol aligned to `conf_ids`
@@ -136,6 +141,8 @@ def minimize_confs_mmff(
         num_threads=num_threads,
         variant=variant,
         backend=backend,
+        minimizer_kind=minimizer_kind,
+        precision=precision,
     )[0]
 
 
@@ -147,6 +154,8 @@ def minimize_molecules_mmff(
     num_threads: int = 0,
     variant: str = "MMFF94s",
     backend: str = "rdkit",
+    minimizer_kind: str = "bfgs",
+    precision: str = "full",
 ) -> list[list[float]]:
     """Minimize conformers across multiple molecules.
 
@@ -158,6 +167,8 @@ def minimize_molecules_mmff(
         num_threads: CPU threads used by RDKit
         variant: MMFF variant used for geometry optimization
         backend: compute backend name
+        minimizer_kind: nvMolKit minimizer name
+        precision: nvMolKit arithmetic precision
 
     Returns:
         Energies grouped by molecule and aligned with `conf_ids`
@@ -180,7 +191,14 @@ def minimize_molecules_mmff(
                     mmffVariant=variant,
                 )
     elif backend == "nvmolkit":
-        return _minimize_molecules_nvmolkit(mols, mmff_props, conf_ids, max_iters)
+        return _minimize_molecules_nvmolkit(
+            mols,
+            mmff_props,
+            conf_ids,
+            max_iters,
+            minimizer_kind,
+            precision,
+        )
     else:
         raise OpenConfValueError(f"Unsupported compute backend: {backend!r}.")
 
@@ -200,6 +218,8 @@ def _minimize_molecules_nvmolkit(
     mmff_props: list[object],
     conf_ids: list[list[int]],
     max_iters: int,
+    minimizer_kind: str,
+    precision: str,
 ) -> list[list[float]]:
     """Minimize conformers and return native nvMolKit energies."""
     native_conf_ids: list[list[int]] = []
@@ -221,6 +241,8 @@ def _minimize_molecules_nvmolkit(
         molecules=mols,
         maxIters=int(max_iters),
         properties=mmff_props,
+        minimizerKind=minimizer_kind.upper(),
+        **precision_kwargs(precision),
     )
     if len(energies) != len(mols) or any(
         len(molecule_energies) != len(ids) for molecule_energies, ids in zip(energies, conf_ids, strict=True)

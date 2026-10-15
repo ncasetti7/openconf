@@ -87,7 +87,7 @@ def _embed_group(
     profile: SeedEmbeddingProfile,
 ) -> tuple[list[list[int]], float, int]:
     """Embed one compatible molecule group with indexed failure isolation."""
-    embedder = get_embedder("nvmolkit")
+    embedder = get_embedder("nvmolkit", precision=profile.nvmolkit_precision)
     start = time.perf_counter()
     batch_size = len(requests)
     try:
@@ -152,7 +152,7 @@ def generate_batched_seeds(
         for item in embedded
     }
     results: dict[int, PrecomputedSeeds] = {}
-    minimization_groups: dict[int, list[_EmbeddedSeedRequest]] = defaultdict(list)
+    minimization_groups: dict[tuple[int, str, str], list[_EmbeddedSeedRequest]] = defaultdict(list)
 
     for item in embedded:
         if not item.conf_ids:
@@ -176,9 +176,15 @@ def generate_batched_seeds(
                 1,
             )
         else:
-            minimization_groups[item.effective_config.seed_minimization_iters].append(item)
+            minimization_groups[
+                (
+                    item.effective_config.seed_minimization_iters,
+                    item.effective_config.nvmolkit_minimizer,
+                    item.effective_config.nvmolkit_precision,
+                )
+            ].append(item)
 
-    for max_iters, group in minimization_groups.items():
+    for (max_iters, minimizer_kind, precision), group in minimization_groups.items():
         group_proposers = [proposers[item.request.index] for item in group]
         properties = [proposer.seed_mmff_properties() for proposer in group_proposers]
         if any(props is None for props in properties):
@@ -191,6 +197,8 @@ def generate_batched_seeds(
                 [item.conf_ids for item in group],
                 max_iters,
                 backend="nvmolkit",
+                minimizer_kind=minimizer_kind,
+                precision=precision,
             )
         except (RuntimeError, ValueError):
             energies_by_mol = []
@@ -301,11 +309,17 @@ def _advance_proposal_run(
 
 def _minimize_staged_proposals(staged: list[_StagedProposal]) -> None:
     """Minimize and commit proposal workspaces in native multi-molecule calls."""
-    grouped: dict[int, list[_StagedProposal]] = defaultdict(list)
+    grouped: dict[tuple[int, str, str], list[_StagedProposal]] = defaultdict(list)
     for item in staged:
-        grouped[int(item.run.proposer.fast_minimizer.max_iters)].append(item)
+        grouped[
+            (
+                int(item.run.proposer.fast_minimizer.max_iters),
+                item.run.config.nvmolkit_minimizer,
+                item.run.config.nvmolkit_precision,
+            )
+        ].append(item)
 
-    for max_iters, group in grouped.items():
+    for (max_iters, minimizer_kind, precision), group in grouped.items():
         minimize_start = time.perf_counter()
         try:
             energies_by_mol = minimize_molecules_mmff(
@@ -314,6 +328,8 @@ def _minimize_staged_proposals(staged: list[_StagedProposal]) -> None:
                 [item.workspace.stage_ids for item in group],
                 max_iters,
                 backend="nvmolkit",
+                minimizer_kind=minimizer_kind,
+                precision=precision,
             )
         except (RuntimeError, ValueError):
             for item in group:

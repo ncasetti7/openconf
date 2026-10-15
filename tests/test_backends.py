@@ -61,8 +61,9 @@ def test_nvmolkit_embedding_rejects_unsafe_import_order(monkeypatch: pytest.Monk
 
 
 def test_nvmolkit_backend_runs_complete_generation_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """NvMolKit backend routes embedding and minimization through complete generation."""
+    """NvMolKit backend routes precision and minimizer through complete generation."""
     calls: list[str] = []
+    single_precision = object()
 
     def embed_molecules(**kwargs: object) -> None:
         molecules = cast("list[Chem.Mol]", kwargs["molecules"])
@@ -70,6 +71,7 @@ def test_nvmolkit_backend_runs_complete_generation_pipeline(monkeypatch: pytest.
         n_confs = cast("int", kwargs["confsPerMolecule"])
         calls.append("embed")
         assert kwargs["maxIterations"] == -1
+        assert kwargs["precision"] is single_precision
         assert params.useRandomCoords
         for molecule in molecules:
             assert not molecule.HasProp("_MMFFSanitized")
@@ -85,6 +87,8 @@ def test_nvmolkit_backend_runs_complete_generation_pipeline(monkeypatch: pytest.
         max_iters = cast("int", kwargs["maxIters"])
         calls.append("optimize")
         assert kwargs["properties"] is not None
+        assert kwargs["minimizerKind"] == "FIRE"
+        assert kwargs["precision"] is single_precision
         return [
             [energy for _, energy in AllChem.MMFFOptimizeMoleculeConfs(molecule, numThreads=1, maxIters=max_iters)]
             for molecule in molecules
@@ -99,8 +103,14 @@ def test_nvmolkit_backend_runs_complete_generation_pipeline(monkeypatch: pytest.
 
     monkeypatch.setattr("openconf.embedding.import_module", import_module)
     monkeypatch.setattr("openconf.relax.import_module", import_module)
+    monkeypatch.setattr(
+        "openconf._nvmolkit.import_module",
+        lambda name: SimpleNamespace(PrecisionMode=SimpleNamespace(SINGLE=single_precision)),
+    )
     config = ConformerConfig(
         backend="nvmolkit",
+        nvmolkit_minimizer="fire",
+        nvmolkit_precision="single",
         max_out=3,
         n_seeds=4,
         n_steps=4,
@@ -114,6 +124,15 @@ def test_nvmolkit_backend_runs_complete_generation_pipeline(monkeypatch: pytest.
     assert ensemble.records
     assert calls[0] == "embed"
     assert calls.count("optimize") >= 2
+
+
+def test_nvmolkit_single_precision_requires_supported_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Single precision reports incompatible nvMolKit versions before execution."""
+    monkeypatch.setattr("openconf._nvmolkit.import_module", lambda name: SimpleNamespace())
+    mol = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+
+    with pytest.raises(OpenConfValueError):
+        NvMolKitEmbedder(precision="single").embed(mol, 1, AllChem.ETKDGv3())
 
 
 def test_nvmolkit_embedding_rejects_disconnected_fragments() -> None:
@@ -161,6 +180,7 @@ def test_nvmolkit_minimization_routes_complete_batch(monkeypatch: pytest.MonkeyP
     assert observed["module"] == "nvmolkit.mmffOptimization"
     assert observed["molecules"] == [mol]
     assert observed["maxIters"] == 7
+    assert observed["minimizerKind"] == "BFGS"
     properties = cast("list[object]", observed["properties"])
     assert properties[0] is props
     assert energies == pytest.approx(expected[::-1])

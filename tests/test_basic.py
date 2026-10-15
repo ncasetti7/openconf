@@ -560,6 +560,8 @@ def test_diverse_final_selection_preserves_protected_seed():
         ({"dedupe_max_atom_deviation": 0.0}, "dedupe_max_atom_deviation"),
         ({"seed_prune_rms_thresh": -0.5}, "seed_prune_rms_thresh"),
         ({"seed_minimization_iters": -1}, "seed_minimization_iters"),
+        ({"nvmolkit_minimizer": "invalid"}, "nvMolKit minimizer"),
+        ({"nvmolkit_precision": "invalid"}, "nvMolKit precision"),
     ],
 )
 def test_config_validation_rejects_invalid_values(kwargs, match):

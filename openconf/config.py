@@ -17,6 +17,8 @@ ConformerPreset = Literal[
     "transition_metal",
 ]
 ComputeBackend = Literal["rdkit", "nvmolkit"]
+NvMolKitMinimizer = Literal["bfgs", "fire"]
+NvMolKitPrecision = Literal["full", "single"]
 _SUPPORTED_MOVE_TYPES = frozenset(
     {
         "single_rotor",
@@ -33,6 +35,8 @@ _SUPPORTED_MOVE_TYPES = frozenset(
 )
 _SUPPORTED_PARENT_STRATEGIES = frozenset({"softmax", "uniform", "best"})
 _SUPPORTED_FINAL_SELECTIONS = frozenset({"energy", "diverse"})
+_SUPPORTED_NVMOLKIT_MINIMIZERS = frozenset({"bfgs", "fire"})
+_SUPPORTED_NVMOLKIT_PRECISIONS = frozenset({"full", "single"})
 _DEFAULT_INTERNAL_FORCE_CONSTANT = 1000.0
 _DEFAULT_BOND_TOLERANCE = 0.01
 _DEFAULT_ANGLE_TOLERANCE_DEG = 0.5
@@ -239,6 +243,9 @@ class ConformerConfig:
     Attributes:
         backend: compute backend for ETKDG embedding and unconstrained batch
             MMFF minimization.
+        nvmolkit_minimizer: nvMolKit MMFF minimizer; `"bfgs"` or `"fire"`.
+        nvmolkit_precision: nvMolKit arithmetic precision; `"full"` or
+            `"single"`. Single precision requires nvMolKit 0.7 or newer.
         max_out: Maximum number of conformers to return.
         pool_max: Maximum pool size during generation.
         n_seeds: initial ETKDG seed conformer count. When None (default),
@@ -443,10 +450,16 @@ class ConformerConfig:
     low_mode_n_source_seeds: int = 1
     tm_seed_move_attempts: int = 0
     backend: ComputeBackend = "rdkit"
+    nvmolkit_minimizer: NvMolKitMinimizer = "bfgs"
+    nvmolkit_precision: NvMolKitPrecision = "full"
 
     def __post_init__(self) -> None:
         if self.backend not in {"rdkit", "nvmolkit"}:
             raise OpenConfValueError(f"Unsupported compute backend: {self.backend!r}.")
+        if self.nvmolkit_minimizer not in _SUPPORTED_NVMOLKIT_MINIMIZERS:
+            raise OpenConfValueError(f"Unsupported nvMolKit minimizer: {self.nvmolkit_minimizer!r}.")
+        if self.nvmolkit_precision not in _SUPPORTED_NVMOLKIT_PRECISIONS:
+            raise OpenConfValueError(f"Unsupported nvMolKit precision: {self.nvmolkit_precision!r}.")
         _require_at_least("max_out", self.max_out, 1)
         _require_optional_at_least("pool_max", self.pool_max, 1)
         _require_optional_at_least("n_seeds", self.n_seeds, 1)

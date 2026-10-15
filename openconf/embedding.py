@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdDistGeom
 
+from ._nvmolkit import precision_kwargs
 from ._runtime import _NVMOLKIT_EMBED_IMPORTED_BEFORE_RDKIT
 from .exceptions import OpenConfValueError
 
@@ -53,6 +54,8 @@ class RDKitEmbedder:
 class NvMolKitEmbedder:
     """Embed conformers with nvMolKit."""
 
+    precision: str = "full"
+
     def embed(self, mol: Chem.Mol, n_confs: int, params: rdDistGeom.EmbedParameters) -> list[int]:
         """Embed conformers and return their identifiers.
 
@@ -94,15 +97,17 @@ class NvMolKitEmbedder:
             params=params,
             confsPerMolecule=n_confs,
             maxIterations=-1,
+            **precision_kwargs(self.precision),
         )
         return [[conformer.GetId() for conformer in mol.GetConformers()] for mol in mols]
 
 
-def get_embedder(name: str) -> ConformerEmbedder:
+def get_embedder(name: str, precision: str = "full") -> ConformerEmbedder:
     """Return conformer embedder for a backend name.
 
     Args:
         name: backend name
+        precision: nvMolKit arithmetic precision
 
     Returns:
         Conformer embedding backend
@@ -113,5 +118,5 @@ def get_embedder(name: str) -> ConformerEmbedder:
     if name == "rdkit":
         return RDKitEmbedder()
     if name == "nvmolkit":
-        return NvMolKitEmbedder()
+        return NvMolKitEmbedder(precision=precision)
     raise OpenConfValueError(f"Unsupported compute backend: {name!r}.")

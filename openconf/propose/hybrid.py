@@ -135,7 +135,7 @@ class HybridProposer:
         self.torsion_lib = torsion_lib
         self.config = config
         self.stats = stats
-        self.embedder = get_embedder(config.backend)
+        self.embedder = get_embedder(config.backend, precision=config.nvmolkit_precision)
 
         self._metal_atom_indices: frozenset[int] = frozenset(a.GetIdx() for a in mol.GetAtoms() if _is_metal(a))
         metal_constraints = ConstraintModel.from_metal_shell(mol, self._metal_atom_indices)
@@ -329,6 +329,8 @@ class HybridProposer:
                 max_its,
                 nthreads,
                 backend=self.config.backend,
+                minimizer_kind=self.config.nvmolkit_minimizer,
+                precision=self.config.nvmolkit_precision,
             )
             self._add_time_stat("seed_minimization_time_s", time.perf_counter() - minimize_start)
             seed_results = list(zip(conf_ids, energies, strict=True))
@@ -881,6 +883,8 @@ class HybridProposer:
                 max_iters,
                 int(self.config.num_threads or 0),
                 backend=self.config.backend,
+                minimizer_kind=self.config.nvmolkit_minimizer,
+                precision=self.config.nvmolkit_precision,
             )
         return [self._minimize_uff_single(batch.staging_mol, stage_id, max_iters) for stage_id in stage_ids]
 
@@ -985,6 +989,8 @@ class HybridProposer:
                 max_iters,
                 num_threads,
                 backend=self.config.backend,
+                minimizer_kind=self.config.nvmolkit_minimizer,
+                precision=self.config.nvmolkit_precision,
             )
 
         return [self._minimize_uff_single(mol, cid, int(max_iters)) for cid in final_ids]
