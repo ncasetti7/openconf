@@ -822,44 +822,130 @@ class HybridProposer:
                     results.append(result)
             return results
 
-        batch_size = self.config.minimize_batch_size
+        batch = self.stage_proposal_batch(pool, step)
+        if batch is None:
+            return []
+        minimize_start = time.perf_counter()
+        energies = self.minimize_proposal_batch(batch)
+        self.record_proposal_minimization(time.perf_counter() - minimize_start)
+        return self.commit_proposal_batch(batch, energies)
+
+    def stage_proposal_batch(self, pool: ConformerPool, step: int) -> CandidateBatchWorkspace | None:
+        """Generate and stage one proposal batch without minimizing it.
+
+        Args:
+            pool: conformer pool for parent selection
+            step: current step number used by first proposal
+
+        Returns:
+            Staged proposal workspace, or `None` when no candidate survives
+        """
+        if self.constraint_model.has_constraints:
+            raise OpenConfValueError("Constrained proposals cannot use unconstrained batch staging.")
 
         candidates: list[tuple[int, str]] = []
-        for i in range(batch_size):
+        for i in range(self.config.minimize_batch_size):
             result = self._generate_candidate(pool, step + i)
             if result is not None:
                 candidates.append(result)
 
         if not candidates:
-            return []
+            return None
 
         staging_start = time.perf_counter()
         batch = CandidateBatchWorkspace.from_candidates(self.mol, self._staging_mol, candidates)
         self._add_time_stat("batch_staging_time_s", time.perf_counter() - staging_start)
-        stage_ids = batch.stage_ids
+        self._increment_stat("n_minimization_calls", len(batch.stage_ids))
+        return batch
 
-        nthreads = int(self.config.num_threads or 0)
-        max_its = int(self.fast_minimizer.max_iters)
-        self._increment_stat("n_minimization_calls", len(stage_ids))
-        minimize_start = time.perf_counter()
+    def proposal_mmff_properties(self) -> object | None:
+        """Return MMFF properties for staged proposal minimization."""
+        return self._staging_mmff_props
+
+    def minimize_proposal_batch(self, batch: CandidateBatchWorkspace) -> list[float]:
+        """Minimize one staged proposal workspace.
+
+        Args:
+            batch: staged proposal workspace
+
+        Returns:
+            Energies aligned with staged conformers
+        """
+        stage_ids = batch.stage_ids
+        max_iters = int(self.fast_minimizer.max_iters)
         if self._staging_mmff_props is not None:
-            energies = minimize_confs_mmff(
-                self._staging_mol,
+            return minimize_confs_mmff(
+                batch.staging_mol,
                 self._staging_mmff_props,
                 stage_ids,
-                max_its,
-                nthreads,
+                max_iters,
+                int(self.config.num_threads or 0),
                 backend=self.config.backend,
             )
-        else:
-            energies = [self._minimize_uff_single(self._staging_mol, sid, max_its) for sid in stage_ids]
-        self._add_time_stat("minimization_time_s", time.perf_counter() - minimize_start)
+        return [self._minimize_uff_single(batch.staging_mol, stage_id, max_iters) for stage_id in stage_ids]
+
+    def record_proposal_minimization(self, elapsed_s: float, molecule_batch_size: int = 1) -> None:
+        """Record proposal minimization timing and native batch size.
+
+        Args:
+            elapsed_s: elapsed minimization time
+            molecule_batch_size: molecules included in native call
+        """
+        self._add_time_stat("minimization_time_s", elapsed_s)
+        if self.stats is not None:
+            self.stats["proposal_minimization_batch_size"] = max(
+                int(self.stats.get("proposal_minimization_batch_size", 1)),
+                molecule_batch_size,
+            )
+
+    def commit_proposal_batch(
+        self,
+        batch: CandidateBatchWorkspace,
+        energies: list[float],
+    ) -> list[tuple[int, float, str]]:
+        """Commit minimized proposal conformers to primary molecule.
+
+        Args:
+            batch: staged proposal workspace
+            energies: energies aligned with staged conformers
+
+        Returns:
+            Accepted conformer IDs, energies, and sources
+        """
         commit_start = time.perf_counter()
         results, failures = batch.commit(energies)
         self._add_time_stat("batch_commit_time_s", time.perf_counter() - commit_start)
         if failures:
             self._increment_stat("n_minimization_failures", failures)
         return results
+
+    def accept_proposals(
+        self,
+        pool: ConformerPool,
+        results: list[tuple[int, float, str]],
+    ) -> bool:
+        """Insert proposal results into pool and record outcomes.
+
+        Args:
+            pool: conformer pool receiving accepted proposals
+            results: minimized proposal results
+
+        Returns:
+            Whether at least one proposal entered pool
+        """
+        any_accepted = False
+        for conf_id, energy, source in results:
+            accepted = pool.insert(conf_id, energy, source=source)
+            if accepted:
+                any_accepted = True
+                self._increment_stat("n_pool_accepts")
+                move_type = source.removeprefix("hybrid_") if source.startswith("hybrid_") else source
+                self._increment_move_stat("move_pool_accepted", move_type)
+                self.record_accepted(conf_id, move_type)
+            else:
+                self._increment_stat("n_pool_rejections")
+                self.mol.RemoveConformer(conf_id)
+        return any_accepted
 
     def full_refine_final(
         self,
@@ -1130,20 +1216,7 @@ def run_hybrid_generation(
             stats["n_batches"] = int(stats["n_batches"]) + 1
         step += step_inc
 
-        any_accepted = False
-        for conf_id, energy, source in results:
-            accepted = pool.insert(conf_id, energy, source=source)
-            if accepted:
-                any_accepted = True
-                if stats:
-                    stats["n_pool_accepts"] = int(stats["n_pool_accepts"]) + 1
-                move_type = source.removeprefix("hybrid_") if source.startswith("hybrid_") else source
-                proposer._increment_move_stat("move_pool_accepted", move_type)
-                proposer.record_accepted(conf_id, move_type)
-            else:
-                if stats:
-                    stats["n_pool_rejections"] = int(stats["n_pool_rejections"]) + 1
-                mol.RemoveConformer(conf_id)
+        any_accepted = proposer.accept_proposals(pool, results)
 
         if any_accepted:
             stagnation = 0

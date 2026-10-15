@@ -87,6 +87,31 @@ def test_batch_separates_incompatible_embedding_profiles(monkeypatch: pytest.Mon
     assert minimization_calls[0] == 2
 
 
+def test_batch_combines_proposal_minimization_across_molecules(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hybrid proposal workspaces share one native minimization call."""
+    _, minimization_calls = _install_fake_nvmolkit(monkeypatch)
+    inputs = ["CCOC1CCCCC1", "CCNC1CCCCC1", "CCCOC1CCCCC1"]
+    config = ConformerConfig(
+        backend="nvmolkit",
+        n_seeds=2,
+        max_out=1,
+        n_steps=1,
+        minimize_batch_size=1,
+        move_probs={"single_rotor": 1.0},
+        skip_clash_check=True,
+        do_final_refine=False,
+        random_seed=7,
+        collect_stats=True,
+    )
+
+    ensembles = generate_conformers_batch(inputs, config=config)
+
+    smiles = [Chem.MolToSmiles(Chem.RemoveHs(ensemble.mol)) for ensemble in ensembles]
+    assert smiles == inputs
+    assert minimization_calls == [3, 3]
+    assert [ensemble.generation_stats["proposal_minimization_batch_size"] for ensemble in ensembles] == [3, 3, 3]
+
+
 def test_batch_keeps_reference_geometry_inputs_on_single_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Existing coordinates bypass cross-molecule embedding without changing order."""
     embedding_calls, _ = _install_fake_nvmolkit(monkeypatch)

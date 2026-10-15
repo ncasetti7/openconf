@@ -54,11 +54,11 @@ ensembles = generate_conformers_batch(
 
 Use `generate_conformers_batch()` for GPU throughput workloads. It preserves
 input order and groups molecules with compatible seed counts and ETKDG settings
-into shared nvMolKit embedding and seed-MMFF calls. Molecules with existing
-coordinates, constraints, metals, or disconnected fragments use the existing
-single-molecule path. Proposal exploration and final refinement remain
-per-molecule operations, so the largest gain is expected for sizeable batches
-whose runtime is dominated by seed generation.
+into shared nvMolKit embedding, seed-MMFF, and proposal-MMFF calls. Molecules
+with existing coordinates, constraints, metals, disconnected fragments, or
+low-mode following use the existing single-molecule path. Final refinement
+remains per-molecule, so configurations that disable it obtain the broadest
+cross-molecule batching.
 
 RDKit remains the default and requires no GPU dependencies. The experimental
 backend currently leaves single-conformer, constrained, low-mode, and UFF

@@ -28,6 +28,7 @@ def new_generation_stats() -> dict[str, GenerationStat]:
         "n_seed_conformers": 0,
         "seed_embedding_batch_size": 1,
         "seed_minimization_batch_size": 1,
+        "proposal_minimization_batch_size": 1,
         "n_unminimized_input_seeds": 0,
         "n_steps_executed": 0,
         "n_batches": 0,

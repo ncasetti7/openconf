@@ -20,7 +20,7 @@ from .perceive import (
     specified_stereochemistry,
 )
 from .pool import ConformerRecord
-from .propose.batch import BatchSeedRequest, generate_batched_seeds
+from .propose.batch import BatchSeedRequest, generate_batched_proposals, generate_batched_seeds
 from .propose.hybrid import run_hybrid_generation, run_low_flex_generation
 from .propose.seeding import PrecomputedSeeds
 from .propose.stats import GenerationStat
@@ -441,13 +441,23 @@ def _run_prepared_generation(
 ) -> ConformerEnsemble:
     """Run generation and assemble public ensemble metadata."""
     runner = run_low_flex_generation if prepared.low_flex else run_hybrid_generation
-    mol, conf_ids, energies, generation_stats = runner(
+    result = runner(
         prepared.mol,
         prepared.rotor_model,
         prepared.config,
         torsion_library=torsion_library,
         precomputed_seeds=precomputed_seeds,
     )
+    return _assemble_generation(prepared, method, result)
+
+
+def _assemble_generation(
+    prepared: _PreparedGeneration,
+    method: str,
+    result: tuple[Chem.Mol, list[int], list[float], dict[str, GenerationStat]],
+) -> ConformerEnsemble:
+    """Assemble public ensemble metadata from generation output."""
+    mol, conf_ids, energies, generation_stats = result
     conf_ids, energies = _filter_stereochemistry_consistent_conformers(
         mol,
         conf_ids,
@@ -519,9 +529,9 @@ def generate_conformers_batch(
 ) -> list[ConformerEnsemble]:
     """Generate conformer ensembles for multiple molecules.
 
-    Compatible nvMolKit inputs share native ETKDG and seed-MMFF calls. RDKit
-    inputs and molecules requiring reference geometry retain single-molecule
-    execution.
+    Compatible nvMolKit inputs share native ETKDG, seed-MMFF, and proposal-MMFF
+    calls. RDKit inputs and molecules requiring reference geometry retain
+    single-molecule execution.
 
     Args:
         mols: molecules or SMILES strings in output order
@@ -557,18 +567,35 @@ def generate_conformers_batch(
         and not any(_is_metal(atom) for atom in prepared.mol.GetAtoms())
     ]
     precomputed = generate_batched_seeds(eligible_requests, torsion_library=torsion_library)
+    proposal_requests = [
+        request for request in eligible_requests if not request.low_flex and not request.config.use_low_mode_following
+    ]
+    proposal_results = generate_batched_proposals(
+        proposal_requests,
+        precomputed,
+        torsion_library=torsion_library,
+    )
 
     ensembles: list[ConformerEnsemble] = []
     for index, prepared in enumerate(prepared_items):
         try:
-            ensembles.append(
-                _run_prepared_generation(
-                    prepared,
-                    method,
-                    torsion_library,
-                    precomputed_seeds=precomputed.get(index),
+            if index in proposal_results:
+                ensembles.append(
+                    _assemble_generation(
+                        prepared,
+                        method,
+                        proposal_results[index],
+                    )
                 )
-            )
+            else:
+                ensembles.append(
+                    _run_prepared_generation(
+                        prepared,
+                        method,
+                        torsion_library,
+                        precomputed_seeds=precomputed.get(index),
+                    )
+                )
         except (TypeError, ValueError, RuntimeError) as exc:
             raise OpenConfValueError(f"Molecule at batch index {index} failed during generation: {exc}") from exc
     return ensembles
