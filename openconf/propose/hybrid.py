@@ -173,8 +173,9 @@ class HybridProposer:
             metal_atom_indices=self._metal_atom_indices,
             constraint_model=self.constraint_model,
         )
-        self.fast_minimizer.prepare(mol)
-        self.full_minimizer.prepare(mol)
+        self._minimizers_prepared = False
+        if config.backend != "nvmolkit":
+            self._prepare_minimizers()
 
         self._moves = MoveExecutor(mol, rotor_model, torsion_lib, config)
 
@@ -206,6 +207,14 @@ class HybridProposer:
         self._move_rewards: dict[str, float] = dict.fromkeys(config.move_probs, 0.0)
         self._pending_tags: dict[int, str] = {}
         self._move_operators = self._moves.operators
+
+    def _prepare_minimizers(self) -> None:
+        """Prepare minimizers once without mutating pre-embedding GPU inputs."""
+        if self._minimizers_prepared:
+            return
+        self.fast_minimizer.prepare(self.mol)
+        self.full_minimizer.prepare(self.mol)
+        self._minimizers_prepared = True
 
     def _increment_stat(self, key: str, amount: int = 1) -> None:
         """Increment an integer stat when instrumentation is enabled."""
@@ -302,6 +311,8 @@ class HybridProposer:
                 conf_ids = [self.mol.AddConformer(new_conf, assignId=True)]
             else:
                 return []
+
+        self._prepare_minimizers()
 
         # Minimize each seed using pre-prepared MMFF props (includes fast_dielectric).
         mmff_props = getattr(self.fast_minimizer, "_mmff_props", None)
@@ -417,6 +428,7 @@ class HybridProposer:
         Returns:
             Energy in kcal/mol after minimization, or inf on failure
         """
+        self._prepare_minimizers()
         minimizer = self.fast_minimizer if use_fast else self.full_minimizer
         props = getattr(minimizer, "_mmff_props", None)
 

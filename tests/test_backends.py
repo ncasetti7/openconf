@@ -61,6 +61,7 @@ def test_nvmolkit_backend_runs_complete_generation_pipeline(monkeypatch: pytest.
         assert kwargs["maxIterations"] == -1
         assert params.useRandomCoords
         for molecule in molecules:
+            assert not molecule.HasProp("_MMFFSanitized")
             assert all(
                 atom.GetHybridization() == Chem.HybridizationType.UNSPECIFIED
                 for atom in molecule.GetAtoms()
