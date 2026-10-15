@@ -80,13 +80,13 @@ def test_nvmolkit_backend_runs_complete_generation_pipeline(monkeypatch: pytest.
             )
             AllChem.EmbedMultipleConfs(molecule, numConfs=n_confs, params=params)
 
-    def optimize(**kwargs: object) -> list[list[tuple[int, float]]]:
+    def optimize(**kwargs: object) -> list[list[float]]:
         molecules = cast("list[Chem.Mol]", kwargs["molecules"])
         max_iters = cast("int", kwargs["maxIters"])
         calls.append("optimize")
         assert kwargs["properties"] is not None
         return [
-            list(AllChem.MMFFOptimizeMoleculeConfs(molecule, numThreads=1, maxIters=max_iters))
+            [energy for _, energy in AllChem.MMFFOptimizeMoleculeConfs(molecule, numThreads=1, maxIters=max_iters)]
             for molecule in molecules
         ]
 
@@ -137,18 +137,18 @@ def test_nvmolkit_minimization_rejects_partial_conformer_batches() -> None:
 
 
 def test_nvmolkit_minimization_routes_complete_batch(monkeypatch: pytest.MonkeyPatch) -> None:
-    """NvMolKit minimization routes complete batches and returns configured energies."""
+    """NvMolKit minimization reuses configured properties and native energies."""
     mol = Chem.AddHs(Chem.MolFromSmiles("CCO"))
     conf_ids = list(AllChem.EmbedMultipleConfs(mol, numConfs=2, params=AllChem.ETKDGv3()))
     props = AllChem.MMFFGetMoleculeProperties(mol, mmffVariant="MMFF94s")
     assert props is not None
     props.SetMMFFDielectricConstant(10)
-    expected = [AllChem.MMFFGetMoleculeForceField(mol, props, confId=conf_id).CalcEnergy() for conf_id in conf_ids]
+    expected = [12.5, 15.25]
     observed: dict[str, object] = {}
 
     def optimize(**kwargs: object) -> list[list[float]]:
         observed.update(kwargs)
-        return [[0 for _ in conf_ids]]
+        return [expected]
 
     def import_module(name: str) -> object:
         observed["module"] = name
@@ -156,10 +156,25 @@ def test_nvmolkit_minimization_routes_complete_batch(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr("openconf.relax.import_module", import_module)
 
-    energies = minimize_confs_mmff(mol, props, conf_ids, max_iters=7, backend="nvmolkit")
+    energies = minimize_confs_mmff(mol, props, conf_ids[::-1], max_iters=7, backend="nvmolkit")
 
     assert observed["module"] == "nvmolkit.mmffOptimization"
     assert observed["molecules"] == [mol]
     assert observed["maxIters"] == 7
-    assert observed["properties"] is not props
-    assert energies == pytest.approx(expected)
+    properties = cast("list[object]", observed["properties"])
+    assert properties[0] is props
+    assert energies == pytest.approx(expected[::-1])
+
+
+def test_nvmolkit_minimization_rejects_misaligned_native_energies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """NvMolKit minimization rejects incomplete native energy results."""
+    mol = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+    conf_ids = list(AllChem.EmbedMultipleConfs(mol, numConfs=2, params=AllChem.ETKDGv3()))
+    props = AllChem.MMFFGetMoleculeProperties(mol, mmffVariant="MMFF94s")
+    assert props is not None
+
+    module = SimpleNamespace(MMFFOptimizeMoleculesConfs=lambda **kwargs: [[1.0]])
+    monkeypatch.setattr("openconf.relax.import_module", lambda name: module)
+
+    with pytest.raises(OpenConfValueError):
+        minimize_confs_mmff(mol, props, conf_ids, max_iters=7, backend="nvmolkit")

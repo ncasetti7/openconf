@@ -100,7 +100,7 @@ class RDKitMMFFMinimizer:
 
 def minimize_confs_mmff(
     mol: Chem.Mol,
-    mmff_props,
+    mmff_props: object,
     conf_ids: list[int],
     max_iters: int,
     num_threads: int = 0,
@@ -109,13 +109,12 @@ def minimize_confs_mmff(
 ) -> list[float]:
     """Minimize conformers and return energies evaluated with mmff_props.
 
-    Uses selected batch optimizer for geometry minimization, then re-evaluates
-    each conformer's energy with pre-prepared properties carrying the custom
-    dielectric.
+    NvMolKit minimizes and evaluates energies with the prepared properties.
+    RDKit minimizes with its batch API, then re-evaluates energies with the
+    prepared properties carrying the custom dielectric.
 
-    Note: geometries are at the default-dielectric (ε=1) MMFF minimum; the custom
-    dielectric is applied only to the energy evaluation. For the coarse fast-
-    minimization passes during MCMM sampling this is an acceptable approximation.
+    Note: RDKit geometries are at the default-dielectric (ε=1) MMFF minimum;
+    custom dielectric is applied only to energy evaluation on that backend.
 
     Args:
         mol: molecule containing conformers
@@ -181,7 +180,7 @@ def minimize_molecules_mmff(
                     mmffVariant=variant,
                 )
     elif backend == "nvmolkit":
-        _minimize_molecules_nvmolkit(mols, conf_ids, max_iters, variant)
+        return _minimize_molecules_nvmolkit(mols, mmff_props, conf_ids, max_iters)
     else:
         raise OpenConfValueError(f"Unsupported compute backend: {backend!r}.")
 
@@ -198,17 +197,19 @@ def minimize_molecules_mmff(
 
 def _minimize_molecules_nvmolkit(
     mols: list[Chem.Mol],
+    mmff_props: list[object],
     conf_ids: list[list[int]],
     max_iters: int,
-    variant: str,
-) -> None:
-    """Minimize all conformers from multiple molecules with nvMolKit."""
+) -> list[list[float]]:
+    """Minimize conformers and return native nvMolKit energies."""
+    native_conf_ids: list[list[int]] = []
     for mol, ids in zip(mols, conf_ids, strict=True):
         molecule_conf_ids = [conformer.GetId() for conformer in mol.GetConformers()]
         if len(molecule_conf_ids) != len(ids) or set(molecule_conf_ids) != set(ids):
             raise OpenConfValueError(
                 "nvMolKit batch minimization requires conf_ids to include every molecule conformer."
             )
+        native_conf_ids.append(molecule_conf_ids)
 
     try:
         module = import_module("nvmolkit.mmffOptimization")
@@ -216,14 +217,20 @@ def _minimize_molecules_nvmolkit(
         raise OpenConfValueError("backend='nvmolkit' requires a compatible nvMolKit installation.") from exc
 
     optimize = cast("Callable[..., list[list[float]]]", module.MMFFOptimizeMoleculesConfs)
-    optimization_props = [AllChem.MMFFGetMoleculeProperties(mol, mmffVariant=variant) for mol in mols]
-    if any(props is None for props in optimization_props):
-        raise OpenConfValueError(f"At least one molecule has no {variant} parameters.")
-    optimize(
+    energies = optimize(
         molecules=mols,
         maxIters=int(max_iters),
-        properties=optimization_props,
+        properties=mmff_props,
     )
+    if len(energies) != len(mols) or any(
+        len(molecule_energies) != len(ids) for molecule_energies, ids in zip(energies, conf_ids, strict=True)
+    ):
+        raise OpenConfValueError("nvMolKit returned energy counts that do not match conformers.")
+    aligned_energies: list[list[float]] = []
+    for molecule_ids, ids, molecule_energies in zip(native_conf_ids, conf_ids, energies, strict=True):
+        energy_by_id = dict(zip(molecule_ids, (float(energy) for energy in molecule_energies), strict=True))
+        aligned_energies.append([energy_by_id[conf_id] for conf_id in ids])
+    return aligned_energies
 
 
 def get_minimizer(
