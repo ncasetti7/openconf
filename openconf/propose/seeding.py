@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from rdkit.Chem import AllChem, rdDistGeom
+
 from ..tuning import get_runtime_tuning
 
 if TYPE_CHECKING:
@@ -145,6 +147,73 @@ class SeedPlan:
     budget_floor: int
     prune_rms_thresh: float
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class SeedEmbeddingProfile:
+    """Settings that must match within one native embedding call."""
+
+    n_seeds: int
+    random_seed: int
+    num_threads: int
+    prune_rms_thresh: float
+    use_small_ring_torsions: bool
+    use_macrocycle_torsions: bool
+    use_basic_knowledge: bool
+
+    def parameters(self) -> rdDistGeom.EmbedParameters:
+        """Build RDKit embedding parameters for this profile."""
+        params = AllChem.ETKDGv3()
+        params.randomSeed = self.random_seed
+        params.numThreads = self.num_threads
+        params.pruneRmsThresh = self.prune_rms_thresh
+        params.useSmallRingTorsions = self.use_small_ring_torsions
+        params.useMacrocycleTorsions = self.use_macrocycle_torsions
+        params.useBasicKnowledge = self.use_basic_knowledge
+        return params
+
+
+@dataclass(frozen=True, slots=True)
+class PrecomputedSeeds:
+    """Seed results produced before a generation runner starts."""
+
+    values: list[tuple[int, float]]
+    embedding_time_s: float = 0.0
+    minimization_time_s: float = 0.0
+    embedding_batch_size: int = 1
+    minimization_batch_size: int = 1
+
+
+def seed_embedding_profile(
+    rotor_model: Model,
+    config: Config,
+    seed_plan: SeedPlan,
+) -> SeedEmbeddingProfile:
+    """Resolve settings used to group molecules for seed embedding.
+
+    Args:
+        rotor_model: rotor model for molecule
+        config: generation configuration
+        seed_plan: resolved seed policy
+
+    Returns:
+        Hashable native embedding profile
+    """
+    ring_info = rotor_model.ring_info
+    macrocycle_tuning = get_runtime_tuning().macrocycle_seeding
+    has_macrocycle = bool(ring_info.get("has_macrocycle"))
+    prune_rms_thresh = seed_plan.prune_rms_thresh
+    if has_macrocycle and macrocycle_tuning.disable_prune_rms:
+        prune_rms_thresh = -1.0
+    return SeedEmbeddingProfile(
+        n_seeds=seed_plan.n_seeds,
+        random_seed=config.random_seed or -1,
+        num_threads=int(config.num_threads or 0),
+        prune_rms_thresh=prune_rms_thresh,
+        use_small_ring_torsions=bool(ring_info.get("has_small_ring")),
+        use_macrocycle_torsions=has_macrocycle and macrocycle_tuning.use_macrocycle_torsions,
+        use_basic_knowledge=has_macrocycle and macrocycle_tuning.use_basic_knowledge,
+    )
 
 
 def resolve_seed_plan(mol: Molecule, rotor_model: Model, config: Config) -> SeedPlan:

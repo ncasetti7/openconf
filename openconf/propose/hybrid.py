@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 from rdkit import Chem
-from rdkit.Chem import AllChem
+from rdkit.Chem import AllChem, rdDistGeom
 from rdkit.Geometry import rdGeometry
 
 from ..config import ConformerConfig, ConstraintSpec
@@ -28,12 +28,14 @@ from .candidates import CandidateBatchWorkspace, ClashChecker, build_nonbonded_m
 from .low_mode import generate_low_mode_seeds
 from .moves import MoveExecutor
 from .seeding import (
+    PrecomputedSeeds,
     SeedPlan,
     _compute_n_seeds,
     _is_large_flexible_non_macrocyclic,
     _resolve_seed_prune_rms_thresh,
     populate_seed_plan_stats,
     resolve_seed_plan,
+    seed_embedding_profile,
 )
 from .stats import GenerationStat, new_generation_stats, populate_effective_config_stats
 
@@ -240,41 +242,22 @@ class HybridProposer:
         Returns:
                 Identifiers and energies for successfully embedded seeds
         """
-        params = AllChem.ETKDGv3()
-        params.randomSeed = self.config.random_seed or -1
-        params.numThreads = int(self.config.num_threads or 0)
-        params.pruneRmsThresh = (
+        resolved_prune = (
             prune_rms_thresh
             if prune_rms_thresh is not None
             else _resolve_seed_prune_rms_thresh(self.mol, self.rotor_model, self.config)
         )
-
-        # Enable ring-aware sampling based on what's in the molecule.
-        # useSmallRingTorsions: crystallography-derived preferences for 3-7-membered rings.
-        # useMacrocycleTorsions: macrocycle-specific distance bounds (≥8-membered).
-        ring_info = self.rotor_model.ring_info
-        macrocycle_tuning = get_runtime_tuning().macrocycle_seeding
-        if ring_info.get("has_small_ring"):
-            params.useSmallRingTorsions = True
-        if ring_info.get("has_macrocycle"):
-            if macrocycle_tuning.use_macrocycle_torsions:
-                params.useMacrocycleTorsions = True
-            if macrocycle_tuning.use_basic_knowledge:
-                params.useBasicKnowledge = True
-            # Macrocycles have many low-RMSD-distinct puckers; the default
-            # 1.0 Å prune threshold collapses them before minimization. Disable
-            # seed pruning so the diversity ETKDG generates actually reaches
-            # the MMFF stage.
-            if macrocycle_tuning.disable_prune_rms:
-                params.pruneRmsThresh = -1.0
+        seed_plan = SeedPlan(n_seeds, n_seeds, 1.0, n_seeds, resolved_prune, "direct")
+        params = seed_embedding_profile(self.rotor_model, self.config, seed_plan).parameters()
 
         # Pin metal centers to their reference geometry during ETKDG so that
         # atoms without RDKit distance-bound tables (lanthanides, actinides, …)
         # do not land in random positions after embedding.
         if self._metal_atom_indices and self.mol.GetNumConformers() > 0:
             ref_conf = self.mol.GetConformers()[0]
-            params.SetCoordMap(
-                {int(idx): rdGeometry.Point3D(*ref_conf.GetAtomPosition(idx)) for idx in self._metal_atom_indices}
+            rdDistGeom.EmbedParameters.SetCoordMap(
+                params,
+                {int(idx): rdGeometry.Point3D(*ref_conf.GetAtomPosition(idx)) for idx in self._metal_atom_indices},
             )
 
         # EmbedMultipleConfs clears all existing conformers even on failure, so
@@ -312,9 +295,27 @@ class HybridProposer:
             else:
                 return []
 
+        return self.minimize_embedded_seeds(conf_ids)
+
+    def prepare_minimizers(self) -> None:
+        """Prepare force-field state after embedding."""
         self._prepare_minimizers()
 
-        # Minimize each seed using pre-prepared MMFF props (includes fast_dielectric).
+    def seed_mmff_properties(self) -> object | None:
+        """Return prepared MMFF properties used for seed energies."""
+        self._prepare_minimizers()
+        return getattr(self.fast_minimizer, "_mmff_props", None)
+
+    def minimize_embedded_seeds(self, conf_ids: list[int]) -> list[tuple[int, float]]:
+        """Minimize embedded seeds and add topology-specific variants.
+
+        Args:
+            conf_ids: embedded conformer IDs
+
+        Returns:
+            Seed identifiers and energies
+        """
+        self._prepare_minimizers()
         mmff_props = getattr(self.fast_minimizer, "_mmff_props", None)
         max_its = self.config.seed_minimization_iters
         nthreads = int(self.config.num_threads or 0)
@@ -341,8 +342,22 @@ class HybridProposer:
             ]
             self._add_time_stat("seed_minimization_time_s", time.perf_counter() - minimize_start)
 
-        # Supplementary seeds covering cis/trans families that ETKDG undersamples
-        # for macrocycles containing N-substituted (tertiary) amide bonds.
+        return self.complete_preminimized_seeds(seed_results)
+
+    def complete_preminimized_seeds(
+        self,
+        seed_results: list[tuple[int, float]],
+    ) -> list[tuple[int, float]]:
+        """Add topology-specific variants to minimized seed results.
+
+        Args:
+            seed_results: minimized seed identifiers and energies
+
+        Returns:
+            Seed results including supplementary variants
+        """
+        mmff_props = getattr(self.fast_minimizer, "_mmff_props", None)
+        ring_info = self.rotor_model.ring_info
         if mmff_props is not None and ring_info.get("has_macrocycle") and seed_results:
             tuning = get_runtime_tuning().macrocycle_seeding
             if tuning.amide_cis_trans_seeds:
@@ -948,6 +963,7 @@ def run_hybrid_generation(
     rotor_model: RotorModel,
     config: ConformerConfig,
     torsion_library: TorsionLibrary | None = None,
+    precomputed_seeds: PrecomputedSeeds | None = None,
 ) -> tuple[Chem.Mol, list[int], list[float], dict[str, GenerationStat]]:
     """Run hybrid conformer generation.
 
@@ -956,6 +972,7 @@ def run_hybrid_generation(
         rotor_model: rotor model
         config: generation configuration
         torsion_library: torsion library override
+        precomputed_seeds: seeds embedded and minimized by batch coordinator
 
     Returns:
         Molecule, conformer IDs, energies, and generation stats
@@ -1016,12 +1033,26 @@ def run_hybrid_generation(
                 stats["n_unminimized_input_seeds"] = 1
         seed_source = "seed_pose" if constraint_spec is not None else "seed_input"
         input_positions = None
-    else:
+    elif precomputed_seeds is None:
         input_positions = mol.GetConformers()[0].GetPositions().copy() if mol.GetNumConformers() > 0 else None
         seeds = proposer.generate_seeds(seed_plan.n_seeds, prune_rms_thresh=seed_plan.prune_rms_thresh)
         seed_source = "seed_etkdg"
+    else:
+        proposer.prepare_minimizers()
+        input_positions = None
+        seeds = precomputed_seeds.values
+        seed_source = "seed_etkdg"
+        if stats:
+            stats["seed_embedding_time_s"] = precomputed_seeds.embedding_time_s
+            stats["seed_minimization_time_s"] = precomputed_seeds.minimization_time_s
+            stats["seed_embedding_batch_size"] = precomputed_seeds.embedding_batch_size
+            stats["seed_minimization_batch_size"] = precomputed_seeds.minimization_batch_size
     if stats:
-        stats["seed_time_s"] = time.perf_counter() - seed_start
+        stats["seed_time_s"] = (
+            precomputed_seeds.embedding_time_s + precomputed_seeds.minimization_time_s
+            if precomputed_seeds is not None
+            else time.perf_counter() - seed_start
+        )
         stats["n_seed_conformers"] = len(seeds)
 
     for conf_id, energy in seeds:
@@ -1182,6 +1213,9 @@ def run_hybrid_generation(
 
     if stats:
         stats["total_time_s"] = time.perf_counter() - total_start
+        if precomputed_seeds is not None:
+            stats["total_time_s"] = float(stats["total_time_s"]) + precomputed_seeds.embedding_time_s
+            stats["total_time_s"] = float(stats["total_time_s"]) + precomputed_seeds.minimization_time_s
 
     return mol, final_ids, final_energies, stats
 
@@ -1191,6 +1225,7 @@ def run_low_flex_generation(
     rotor_model: RotorModel,
     config: ConformerConfig,
     torsion_library: TorsionLibrary | None = None,
+    precomputed_seeds: PrecomputedSeeds | None = None,
 ) -> tuple[Chem.Mol, list[int], list[float], dict[str, GenerationStat]]:
     """Run the ETKDG-only low-flexibility fast path.
 
@@ -1204,6 +1239,7 @@ def run_low_flex_generation(
         rotor_model: rotor model
         config: generation configuration
         torsion_library: torsion library override
+        precomputed_seeds: seeds embedded and minimized by batch coordinator
 
     Returns:
         Molecule, conformer IDs, energies, and generation stats
@@ -1226,9 +1262,23 @@ def run_low_flex_generation(
 
     seed_start = time.perf_counter()
     input_positions = mol.GetConformers()[0].GetPositions().copy() if mol.GetNumConformers() > 0 else None
-    seeds = proposer.generate_seeds(seed_plan.n_seeds, prune_rms_thresh=seed_plan.prune_rms_thresh)
+    if precomputed_seeds is None:
+        seeds = proposer.generate_seeds(seed_plan.n_seeds, prune_rms_thresh=seed_plan.prune_rms_thresh)
+    else:
+        proposer.prepare_minimizers()
+        input_positions = None
+        seeds = precomputed_seeds.values
+        if stats:
+            stats["seed_embedding_time_s"] = precomputed_seeds.embedding_time_s
+            stats["seed_minimization_time_s"] = precomputed_seeds.minimization_time_s
+            stats["seed_embedding_batch_size"] = precomputed_seeds.embedding_batch_size
+            stats["seed_minimization_batch_size"] = precomputed_seeds.minimization_batch_size
     if stats:
-        stats["seed_time_s"] = time.perf_counter() - seed_start
+        stats["seed_time_s"] = (
+            precomputed_seeds.embedding_time_s + precomputed_seeds.minimization_time_s
+            if precomputed_seeds is not None
+            else time.perf_counter() - seed_start
+        )
         stats["n_seed_conformers"] = len(seeds)
 
     for conf_id, energy in seeds:
@@ -1290,5 +1340,8 @@ def run_low_flex_generation(
 
     if stats:
         stats["total_time_s"] = time.perf_counter() - total_start
+        if precomputed_seeds is not None:
+            stats["total_time_s"] = float(stats["total_time_s"]) + precomputed_seeds.embedding_time_s
+            stats["total_time_s"] = float(stats["total_time_s"]) + precomputed_seeds.minimization_time_s
 
     return mol, final_ids, final_energies, stats

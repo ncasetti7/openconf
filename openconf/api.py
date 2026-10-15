@@ -1,6 +1,7 @@
 """Main API for openconf conformer generation."""
 
 import dataclasses
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Self
 
@@ -10,6 +11,7 @@ from rdkit import Chem
 from .config import ConformerConfig, ConformerPreset, ConstraintSpec, preset_config
 from .exceptions import OpenConfRuntimeError, OpenConfValueError
 from .perceive import (
+    RotorModel,
     StereoSignature,
     _is_metal,
     build_rotor_model,
@@ -18,7 +20,9 @@ from .perceive import (
     specified_stereochemistry,
 )
 from .pool import ConformerRecord
+from .propose.batch import BatchSeedRequest, generate_batched_seeds
 from .propose.hybrid import run_hybrid_generation, run_low_flex_generation
+from .propose.seeding import PrecomputedSeeds
 from .propose.stats import GenerationStat
 from .torsionlib import TorsionLibrary
 from .tuning import get_runtime_tuning
@@ -369,6 +373,94 @@ class ConformerEnsemble:
         return cls(mol=mol, records=records)
 
 
+@dataclass(slots=True)
+class _PreparedGeneration:
+    """Inputs resolved for one conformer-generation run."""
+
+    mol: Chem.Mol
+    config: ConformerConfig
+    rotor_model: RotorModel
+    reference_stereo: StereoSignature
+    low_flex: bool
+
+
+def _resolve_generation_config(
+    config: ConformerConfig | None,
+    preset: ConformerPreset | None,
+) -> ConformerConfig:
+    """Resolve mutually exclusive configuration inputs."""
+    if config is not None and preset is not None:
+        raise OpenConfValueError("Specify at most one of 'config' or 'preset', not both.")
+    if preset is not None:
+        return preset_config(preset)
+    return config if config is not None else ConformerConfig()
+
+
+def _prepare_generation(
+    mol: Chem.Mol | str,
+    method: str,
+    config: ConformerConfig,
+    add_hs: bool,
+) -> _PreparedGeneration:
+    """Prepare one input for conformer generation."""
+    if method != "hybrid":
+        raise OpenConfValueError(f"Unknown method: {method}. Available: 'hybrid'")
+    if isinstance(mol, str):
+        from .io import smiles_to_mol
+
+        mol = smiles_to_mol(mol, add_hs=False)
+
+    prepared_mol = prepare_molecule(mol, add_hs=add_hs)
+    reference_stereo = specified_stereochemistry(prepared_mol)
+    rotor_model = build_rotor_model(prepared_mol)
+    low_flex_tuning = get_runtime_tuning().low_flex_path
+    has_metal = any(_is_metal(atom) for atom in prepared_mol.GetAtoms())
+    has_metal_input = has_metal and prepared_mol.GetNumConformers() > 0
+    effective_config = _with_auto_transition_metal_sampling(
+        config,
+        has_metal=has_metal,
+        has_metal_input=has_metal_input,
+    )
+    has_tm_sampling_profile = has_metal and effective_config.move_probs.get("tm_ligand_rotate", 0.0) > 0.0
+    low_flex = (
+        effective_config.constraint_spec is None
+        and not has_metal_input
+        and not has_tm_sampling_profile
+        and rotor_model.n_rotatable <= low_flex_tuning.max_rotatable
+        and (low_flex_tuning.allow_macrocycles or not rotor_model.ring_info.get("has_macrocycle"))
+        and (low_flex_tuning.allow_rings or not rotor_model.ring_info.get("ring_sizes"))
+    )
+    return _PreparedGeneration(prepared_mol, effective_config, rotor_model, reference_stereo, low_flex)
+
+
+def _run_prepared_generation(
+    prepared: _PreparedGeneration,
+    method: str,
+    torsion_library: TorsionLibrary | None,
+    precomputed_seeds: PrecomputedSeeds | None = None,
+) -> ConformerEnsemble:
+    """Run generation and assemble public ensemble metadata."""
+    runner = run_low_flex_generation if prepared.low_flex else run_hybrid_generation
+    mol, conf_ids, energies, generation_stats = runner(
+        prepared.mol,
+        prepared.rotor_model,
+        prepared.config,
+        torsion_library=torsion_library,
+        precomputed_seeds=precomputed_seeds,
+    )
+    conf_ids, energies = _filter_stereochemistry_consistent_conformers(
+        mol,
+        conf_ids,
+        energies,
+        prepared.reference_stereo,
+    )
+    records = [
+        ConformerRecord(conf_id=conf_id, energy_kcal=energy, source=method)
+        for conf_id, energy in zip(conf_ids, energies, strict=True)
+    ]
+    return ConformerEnsemble(mol=mol, records=records, generation_stats=generation_stats)
+
+
 def generate_conformers(
     mol: Chem.Mol | str,
     method: str = "hybrid",
@@ -412,54 +504,74 @@ def generate_conformers(
         >>> ensemble = generate_conformers(mol, preset="docking")  # doctest: +SKIP
         >>> ensemble = generate_conformers(mol, config=ConformerConfig(max_out=100))  # doctest: +SKIP
     """
-    if config is not None and preset is not None:
-        raise OpenConfValueError("Specify at most one of 'config' or 'preset', not both.")
+    resolved_config = _resolve_generation_config(config, preset)
+    prepared = _prepare_generation(mol, method, resolved_config, add_hs)
+    return _run_prepared_generation(prepared, method, torsion_library)
 
-    if isinstance(mol, str):
-        from .io import smiles_to_mol
 
-        mol = smiles_to_mol(mol, add_hs=False)
+def generate_conformers_batch(
+    mols: Sequence[Chem.Mol | str],
+    method: str = "hybrid",
+    config: ConformerConfig | None = None,
+    preset: ConformerPreset | None = None,
+    torsion_library: TorsionLibrary | None = None,
+    add_hs: bool = True,
+) -> list[ConformerEnsemble]:
+    """Generate conformer ensembles for multiple molecules.
 
-    if preset is not None:
-        config = preset_config(preset)
-    elif config is None:
-        config = ConformerConfig()
+    Compatible nvMolKit inputs share native ETKDG and seed-MMFF calls. RDKit
+    inputs and molecules requiring reference geometry retain single-molecule
+    execution.
 
-    mol = prepare_molecule(mol, add_hs=add_hs)
-    reference_stereo = specified_stereochemistry(mol)
-    rotor_model = build_rotor_model(mol)
+    Args:
+        mols: molecules or SMILES strings in output order
+        method: generation method; only `"hybrid"` is supported
+        config: shared configuration options
+        preset: shared named preset, mutually exclusive with `config`
+        torsion_library: torsion library override
+        add_hs: add explicit hydrogens before embedding
 
-    if method == "hybrid":
-        low_flex_tuning = get_runtime_tuning().low_flex_path
-        has_metal = any(_is_metal(atom) for atom in mol.GetAtoms())
-        has_metal_input = has_metal and mol.GetNumConformers() > 0
-        config = _with_auto_transition_metal_sampling(config, has_metal=has_metal, has_metal_input=has_metal_input)
-        has_tm_sampling_profile = has_metal and config.move_probs.get("tm_ligand_rotate", 0.0) > 0.0
-        use_low_flex_path = (
-            config.constraint_spec is None
-            and not has_metal_input
-            and not has_tm_sampling_profile
-            and rotor_model.n_rotatable <= low_flex_tuning.max_rotatable
-            and (low_flex_tuning.allow_macrocycles or not rotor_model.ring_info.get("has_macrocycle"))
-            and (low_flex_tuning.allow_rings or not rotor_model.ring_info.get("ring_sizes"))
-        )
-        runner = run_low_flex_generation if use_low_flex_path else run_hybrid_generation
-        mol, conf_ids, energies, generation_stats = runner(mol, rotor_model, config, torsion_library=torsion_library)
-    else:
-        raise OpenConfValueError(f"Unknown method: {method}. Available: 'hybrid'")
+    Returns:
+        Generated ensembles aligned with `mols`
 
-    conf_ids, energies = _filter_stereochemistry_consistent_conformers(mol, conf_ids, energies, reference_stereo)
+    Raises:
+        OpenConfValueError: input or configuration is invalid
+    """
+    if not mols:
+        return []
+    resolved_config = _resolve_generation_config(config, preset)
+    prepared_items: list[_PreparedGeneration] = []
+    for index, mol in enumerate(mols):
+        try:
+            prepared_items.append(_prepare_generation(mol, method, resolved_config, add_hs))
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise OpenConfValueError(f"Molecule at batch index {index} is invalid: {exc}") from exc
 
-    records = [
-        ConformerRecord(
-            conf_id=cid,
-            energy_kcal=energy,
-            source=method,
-        )
-        for cid, energy in zip(conf_ids, energies, strict=True)
+    eligible_requests = [
+        BatchSeedRequest(index, prepared.mol, prepared.rotor_model, prepared.config, prepared.low_flex)
+        for index, prepared in enumerate(prepared_items)
+        if prepared.config.backend == "nvmolkit"
+        and prepared.config.constraint_spec is None
+        and prepared.mol.GetNumConformers() == 0
+        and len(Chem.GetMolFrags(prepared.mol)) == 1
+        and not any(_is_metal(atom) for atom in prepared.mol.GetAtoms())
     ]
+    precomputed = generate_batched_seeds(eligible_requests, torsion_library=torsion_library)
 
-    return ConformerEnsemble(mol=mol, records=records, generation_stats=generation_stats)
+    ensembles: list[ConformerEnsemble] = []
+    for index, prepared in enumerate(prepared_items):
+        try:
+            ensembles.append(
+                _run_prepared_generation(
+                    prepared,
+                    method,
+                    torsion_library,
+                    precomputed_seeds=precomputed.get(index),
+                )
+            )
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise OpenConfValueError(f"Molecule at batch index {index} failed during generation: {exc}") from exc
+    return ensembles
 
 
 def generate_conformers_from_pose(

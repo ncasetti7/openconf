@@ -129,36 +129,86 @@ def minimize_confs_mmff(
     Returns:
         Energies in kcal/mol aligned to `conf_ids`
     """
-    if not conf_ids:
+    return minimize_molecules_mmff(
+        [mol],
+        [mmff_props],
+        [conf_ids],
+        max_iters,
+        num_threads=num_threads,
+        variant=variant,
+        backend=backend,
+    )[0]
+
+
+def minimize_molecules_mmff(
+    mols: list[Chem.Mol],
+    mmff_props: list[object],
+    conf_ids: list[list[int]],
+    max_iters: int,
+    num_threads: int = 0,
+    variant: str = "MMFF94s",
+    backend: str = "rdkit",
+) -> list[list[float]]:
+    """Minimize conformers across multiple molecules.
+
+    Args:
+        mols: molecules containing conformers
+        mmff_props: prepared MMFF properties aligned with `mols`
+        conf_ids: conformer IDs aligned with `mols`
+        max_iters: maximum minimization iterations
+        num_threads: CPU threads used by RDKit
+        variant: MMFF variant used for geometry optimization
+        backend: compute backend name
+
+    Returns:
+        Energies grouped by molecule and aligned with `conf_ids`
+
+    Raises:
+        OpenConfValueError: inputs are misaligned or backend is unsupported
+    """
+    if len(mols) != len(mmff_props) or len(mols) != len(conf_ids):
+        raise OpenConfValueError("mols, mmff_props, and conf_ids must have equal lengths.")
+    if not mols:
         return []
 
     if backend == "rdkit":
-        AllChem.MMFFOptimizeMoleculeConfs(
-            mol, numThreads=int(num_threads or 0), maxIters=int(max_iters), mmffVariant=variant
-        )
+        for mol, ids in zip(mols, conf_ids, strict=True):
+            if ids:
+                AllChem.MMFFOptimizeMoleculeConfs(
+                    mol,
+                    numThreads=int(num_threads or 0),
+                    maxIters=int(max_iters),
+                    mmffVariant=variant,
+                )
     elif backend == "nvmolkit":
-        _minimize_confs_nvmolkit(mol, conf_ids, max_iters, variant)
+        _minimize_molecules_nvmolkit(mols, conf_ids, max_iters, variant)
     else:
         raise OpenConfValueError(f"Unsupported compute backend: {backend!r}.")
 
     return [
-        float(ff.CalcEnergy())
-        if (ff := AllChem.MMFFGetMoleculeForceField(mol, mmff_props, confId=cid)) is not None
-        else float("inf")
-        for cid in conf_ids
+        [
+            float(ff.CalcEnergy())
+            if (ff := AllChem.MMFFGetMoleculeForceField(mol, props, confId=conf_id)) is not None
+            else float("inf")
+            for conf_id in ids
+        ]
+        for mol, props, ids in zip(mols, mmff_props, conf_ids, strict=True)
     ]
 
 
-def _minimize_confs_nvmolkit(
-    mol: Chem.Mol,
-    conf_ids: list[int],
+def _minimize_molecules_nvmolkit(
+    mols: list[Chem.Mol],
+    conf_ids: list[list[int]],
     max_iters: int,
     variant: str,
 ) -> None:
-    """Minimize all molecule conformers with nvMolKit."""
-    molecule_conf_ids = [conformer.GetId() for conformer in mol.GetConformers()]
-    if len(molecule_conf_ids) != len(conf_ids) or set(molecule_conf_ids) != set(conf_ids):
-        raise OpenConfValueError("nvMolKit batch minimization requires conf_ids to include every molecule conformer.")
+    """Minimize all conformers from multiple molecules with nvMolKit."""
+    for mol, ids in zip(mols, conf_ids, strict=True):
+        molecule_conf_ids = [conformer.GetId() for conformer in mol.GetConformers()]
+        if len(molecule_conf_ids) != len(ids) or set(molecule_conf_ids) != set(ids):
+            raise OpenConfValueError(
+                "nvMolKit batch minimization requires conf_ids to include every molecule conformer."
+            )
 
     try:
         module = import_module("nvmolkit.mmffOptimization")
@@ -166,11 +216,11 @@ def _minimize_confs_nvmolkit(
         raise OpenConfValueError("backend='nvmolkit' requires a compatible nvMolKit installation.") from exc
 
     optimize = cast("Callable[..., list[list[float]]]", module.MMFFOptimizeMoleculesConfs)
-    optimization_props = AllChem.MMFFGetMoleculeProperties(mol, mmffVariant=variant)
-    if optimization_props is None:
-        raise OpenConfValueError(f"Molecule has no {variant} parameters.")
+    optimization_props = [AllChem.MMFFGetMoleculeProperties(mol, mmffVariant=variant) for mol in mols]
+    if any(props is None for props in optimization_props):
+        raise OpenConfValueError(f"At least one molecule has no {variant} parameters.")
     optimize(
-        molecules=[mol],
+        molecules=mols,
         maxIters=int(max_iters),
         properties=optimization_props,
     )

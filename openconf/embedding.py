@@ -21,6 +21,15 @@ class ConformerEmbedder(Protocol):
         """Embed conformers and return their identifiers."""
         ...
 
+    def embed_many(
+        self,
+        mols: list[Chem.Mol],
+        n_confs: int,
+        params: rdDistGeom.EmbedParameters,
+    ) -> list[list[int]]:
+        """Embed conformers into multiple molecules."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class RDKitEmbedder:
@@ -29,6 +38,15 @@ class RDKitEmbedder:
     def embed(self, mol: Chem.Mol, n_confs: int, params: rdDistGeom.EmbedParameters) -> list[int]:
         """Embed conformers and return their identifiers."""
         return list(AllChem.EmbedMultipleConfs(mol, numConfs=n_confs, params=params))
+
+    def embed_many(
+        self,
+        mols: list[Chem.Mol],
+        n_confs: int,
+        params: rdDistGeom.EmbedParameters,
+    ) -> list[list[int]]:
+        """Embed conformers into multiple molecules."""
+        return [self.embed(mol, n_confs, params) for mol in mols]
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,12 +59,27 @@ class NvMolKitEmbedder:
         Raises:
             OpenConfValueError: nvMolKit is unavailable, unsafe to call, or incompatible with molecule
         """
+        return self.embed_many([mol], n_confs, params)[0]
+
+    def embed_many(
+        self,
+        mols: list[Chem.Mol],
+        n_confs: int,
+        params: rdDistGeom.EmbedParameters,
+    ) -> list[list[int]]:
+        """Embed conformers into multiple molecules in one nvMolKit call.
+
+        Raises:
+            OpenConfValueError: nvMolKit is unavailable, unsafe to call, or incompatible with molecules
+        """
+        if not mols:
+            return []
         if _NVMOLKIT_EMBED_IMPORTED_BEFORE_RDKIT:
             raise OpenConfValueError(
                 "nvMolKit 0.6 ETKDG is unsafe when imported before RDKit. Restart Python and import openconf or "
                 "rdkit before nvmolkit.embedMolecules."
             )
-        if len(Chem.GetMolFrags(mol)) > 1:
+        if any(len(Chem.GetMolFrags(mol)) > 1 for mol in mols):
             raise OpenConfValueError("nvMolKit embedding does not support separate fragment embedding.")
 
         try:
@@ -57,12 +90,12 @@ class NvMolKitEmbedder:
         embed_molecules = cast("Callable[..., None]", module.EmbedMolecules)
         params.useRandomCoords = True
         embed_molecules(
-            molecules=[mol],
+            molecules=mols,
             params=params,
             confsPerMolecule=n_confs,
             maxIterations=-1,
         )
-        return [conformer.GetId() for conformer in mol.GetConformers()]
+        return [[conformer.GetId() for conformer in mol.GetConformers()] for mol in mols]
 
 
 def get_embedder(name: str) -> ConformerEmbedder:

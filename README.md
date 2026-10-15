@@ -42,11 +42,23 @@ for pip, conda, and RDKit-pinned installation options. Select the backend
 explicitly after installation:
 
 ```python
-from openconf import ConformerConfig, generate_conformers
+from openconf import ConformerConfig, generate_conformers, generate_conformers_batch
 
 config = ConformerConfig(backend="nvmolkit")
 ensemble = generate_conformers("CCCCc1ccccc1", config=config)
+ensembles = generate_conformers_batch(
+    ["CCO", "CCCCc1ccccc1", "CC(C)Cc1ccc(cc1)C(C)C(=O)O"],
+    config=config,
+)
 ```
+
+Use `generate_conformers_batch()` for GPU throughput workloads. It preserves
+input order and groups molecules with compatible seed counts and ETKDG settings
+into shared nvMolKit embedding and seed-MMFF calls. Molecules with existing
+coordinates, constraints, metals, or disconnected fragments use the existing
+single-molecule path. Proposal exploration and final refinement remain
+per-molecule operations, so the largest gain is expected for sizeable batches
+whose runtime is dominated by seed generation.
 
 RDKit remains the default and requires no GPU dependencies. The experimental
 backend currently leaves single-conformer, constrained, low-mode, and UFF

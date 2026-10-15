@@ -5,6 +5,7 @@ from .api import (
     ConformerEnsemble,
     ConformerRecord,
     generate_conformers,
+    generate_conformers_batch,
     generate_conformers_from_pose,
 )
 from .config import (
@@ -45,6 +46,7 @@ __all__ = [
     "build_rotor_model",
     "filter_constrained_rotors",
     "generate_conformers",
+    "generate_conformers_batch",
     "generate_conformers_from_pose",
     "get_minimizer",
     "mol_to_smiles",
