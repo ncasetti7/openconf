@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdDistGeom
 
+from ._runtime import _NVMOLKIT_EMBED_IMPORTED_BEFORE_RDKIT
 from .exceptions import OpenConfValueError
 
 if TYPE_CHECKING:
@@ -38,10 +39,14 @@ class NvMolKitEmbedder:
         """Embed conformers and return their identifiers.
 
         Raises:
-            OpenConfValueError: molecule has disconnected fragments or nvMolKit is unavailable
+            OpenConfValueError: nvMolKit is unavailable, unsafe to call, or incompatible with molecule
         """
-        isolated_mol = Chem.Mol(mol)
-        if len(Chem.GetMolFrags(isolated_mol)) > 1:
+        if _NVMOLKIT_EMBED_IMPORTED_BEFORE_RDKIT:
+            raise OpenConfValueError(
+                "nvMolKit 0.6 ETKDG is unsafe when imported before RDKit. Restart Python and import openconf or "
+                "rdkit before nvmolkit.embedMolecules."
+            )
+        if len(Chem.GetMolFrags(mol)) > 1:
             raise OpenConfValueError("nvMolKit embedding does not support separate fragment embedding.")
 
         try:
@@ -52,15 +57,12 @@ class NvMolKitEmbedder:
         embed_molecules = cast("Callable[..., None]", module.EmbedMolecules)
         params.useRandomCoords = True
         embed_molecules(
-            molecules=[isolated_mol],
+            molecules=[mol],
             params=params,
             confsPerMolecule=n_confs,
             maxIterations=-1,
         )
-        embedded_conf_ids = [conformer.GetId() for conformer in isolated_mol.GetConformers()]
-        embedded_conformers = [Chem.Conformer(isolated_mol.GetConformer(conf_id)) for conf_id in embedded_conf_ids]
-        mol.RemoveAllConformers()
-        return [mol.AddConformer(conformer, assignId=True) for conformer in embedded_conformers]
+        return [conformer.GetId() for conformer in mol.GetConformers()]
 
 
 def get_embedder(name: str) -> ConformerEmbedder:

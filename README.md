@@ -54,6 +54,11 @@ fallback minimization on the CPU. nvMolKit requires random-coordinate ETKDG and
 does not support coordinate maps, custom bounds matrices, or separate fragment
 embedding; unsupported inputs fail without silently switching backends.
 
+With nvMolKit 0.6, import `openconf` or RDKit before importing
+`nvmolkit.embedMolecules`. Loading nvMolKit's ETKDG native extension before
+RDKit can crash when embedding begins; OpenConf detects that unsafe ordering
+and asks for a fresh Python process.
+
 ## Quick Start
 
 ### Python API

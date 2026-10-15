@@ -20,7 +20,7 @@ def test_nvmolkit_embedding_enables_random_coordinates(monkeypatch: pytest.Monke
         molecules = cast("list[Chem.Mol]", kwargs["molecules"])
         params = cast("rdDistGeom.EmbedParameters", kwargs["params"])
         n_confs = cast("int", kwargs["confsPerMolecule"])
-        observed["isolated"] = molecules[0] is not mol
+        observed["in_place"] = molecules[0] is mol
         observed["num_threads"] = params.numThreads
         observed["prune_rms_thresh"] = params.pruneRmsThresh
         observed["use_random_coords"] = params.useRandomCoords
@@ -41,7 +41,7 @@ def test_nvmolkit_embedding_enables_random_coordinates(monkeypatch: pytest.Monke
 
     assert observed == {
         "module": "nvmolkit.embedMolecules",
-        "isolated": True,
+        "in_place": True,
         "num_threads": 0,
         "prune_rms_thresh": 1.5,
         "use_random_coords": True,
@@ -49,6 +49,15 @@ def test_nvmolkit_embedding_enables_random_coordinates(monkeypatch: pytest.Monke
     }
     assert conf_ids == [conformer.GetId() for conformer in mol.GetConformers()]
     assert conf_ids
+
+
+def test_nvmolkit_embedding_rejects_unsafe_import_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reject nvMolKit native extension loaded before RDKit."""
+    monkeypatch.setattr("openconf.embedding._NVMOLKIT_EMBED_IMPORTED_BEFORE_RDKIT", True)
+    mol = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+
+    with pytest.raises(OpenConfValueError, match="imported before RDKit"):
+        NvMolKitEmbedder().embed(mol, 1, AllChem.ETKDGv3())
 
 
 def test_nvmolkit_backend_runs_complete_generation_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:

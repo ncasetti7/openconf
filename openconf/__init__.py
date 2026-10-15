@@ -1,5 +1,6 @@
 """Public package interface for openconf conformer generation."""
 
+from ._runtime import _NVMOLKIT_EMBED_IMPORTED_BEFORE_RDKIT
 from .api import (
     ConformerEnsemble,
     ConformerRecord,
