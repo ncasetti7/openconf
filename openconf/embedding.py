@@ -50,13 +50,17 @@ class NvMolKitEmbedder:
 
         embed_molecules = cast("Callable[..., None]", module.EmbedMolecules)
         params.useRandomCoords = True
+        isolated_mol = Chem.Mol(mol)
         embed_molecules(
-            molecules=[mol],
+            molecules=[isolated_mol],
             params=params,
             confsPerMolecule=n_confs,
             maxIterations=-1,
         )
-        return [conformer.GetId() for conformer in mol.GetConformers()]
+        mol.RemoveAllConformers()
+        return [
+            mol.AddConformer(Chem.Conformer(conformer), assignId=True) for conformer in isolated_mol.GetConformers()
+        ]
 
 
 def get_embedder(name: str) -> ConformerEmbedder:

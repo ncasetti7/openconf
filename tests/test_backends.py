@@ -20,6 +20,7 @@ def test_nvmolkit_embedding_enables_random_coordinates(monkeypatch: pytest.Monke
         molecules = cast("list[Chem.Mol]", kwargs["molecules"])
         params = cast("rdDistGeom.EmbedParameters", kwargs["params"])
         n_confs = cast("int", kwargs["confsPerMolecule"])
+        observed["isolated"] = molecules[0] is not mol
         observed["num_threads"] = params.numThreads
         observed["prune_rms_thresh"] = params.pruneRmsThresh
         observed["use_random_coords"] = params.useRandomCoords
@@ -40,6 +41,7 @@ def test_nvmolkit_embedding_enables_random_coordinates(monkeypatch: pytest.Monke
 
     assert observed == {
         "module": "nvmolkit.embedMolecules",
+        "isolated": True,
         "num_threads": 0,
         "prune_rms_thresh": 1.5,
         "use_random_coords": True,
