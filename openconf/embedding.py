@@ -57,10 +57,10 @@ class NvMolKitEmbedder:
             confsPerMolecule=n_confs,
             maxIterations=-1,
         )
+        embedded_conf_ids = [conformer.GetId() for conformer in isolated_mol.GetConformers()]
+        embedded_conformers = [Chem.Conformer(isolated_mol.GetConformer(conf_id)) for conf_id in embedded_conf_ids]
         mol.RemoveAllConformers()
-        return [
-            mol.AddConformer(Chem.Conformer(conformer), assignId=True) for conformer in isolated_mol.GetConformers()
-        ]
+        return [mol.AddConformer(conformer, assignId=True) for conformer in embedded_conformers]
 
 
 def get_embedder(name: str) -> ConformerEmbedder:
