@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-from ._nvmolkit import precision_kwargs
+from ._nvmolkit import hardware_options_kwargs, precision_kwargs
 from .constraints import ConstraintModel, minimize_with_constraints
 from .exceptions import OpenConfValueError
 
@@ -242,6 +242,7 @@ def _minimize_molecules_nvmolkit(
         maxIters=int(max_iters),
         properties=mmff_props,
         minimizerKind=minimizer_kind.upper(),
+        **hardware_options_kwargs("mmff"),
         **precision_kwargs(precision),
     )
     if len(energies) != len(mols) or any(

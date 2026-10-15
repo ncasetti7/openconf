@@ -61,9 +61,18 @@ def test_nvmolkit_embedding_rejects_unsafe_import_order(monkeypatch: pytest.Monk
 
 
 def test_nvmolkit_backend_runs_complete_generation_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """NvMolKit backend routes precision and minimizer through complete generation."""
+    """NvMolKit backend routes algorithm and hardware options through generation."""
     calls: list[str] = []
     single_precision = object()
+
+    def make_hardware_options(**kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(**kwargs)
+
+    monkeypatch.setenv("OPENCONF_NVMOLKIT_ETKDG_BATCH_SIZE", "768")
+    monkeypatch.setenv("OPENCONF_NVMOLKIT_ETKDG_BATCHES_PER_GPU", "3")
+    monkeypatch.setenv("OPENCONF_NVMOLKIT_ETKDG_PREPROCESSING_THREADS", "7")
+    monkeypatch.setenv("OPENCONF_NVMOLKIT_MMFF_BATCH_SIZE", "256")
+    monkeypatch.setenv("OPENCONF_NVMOLKIT_MMFF_BATCHES_PER_GPU", "2")
 
     def embed_molecules(**kwargs: object) -> None:
         molecules = cast("list[Chem.Mol]", kwargs["molecules"])
@@ -72,6 +81,12 @@ def test_nvmolkit_backend_runs_complete_generation_pipeline(monkeypatch: pytest.
         calls.append("embed")
         assert kwargs["maxIterations"] == -1
         assert kwargs["precision"] is single_precision
+        hardware_options = cast("SimpleNamespace", kwargs["hardwareOptions"])
+        assert vars(hardware_options) == {
+            "preprocessingThreads": 7,
+            "batchSize": 768,
+            "batchesPerGpu": 3,
+        }
         assert params.useRandomCoords
         for molecule in molecules:
             assert not molecule.HasProp("_MMFFSanitized")
@@ -89,6 +104,12 @@ def test_nvmolkit_backend_runs_complete_generation_pipeline(monkeypatch: pytest.
         assert kwargs["properties"] is not None
         assert kwargs["minimizerKind"] == "FIRE"
         assert kwargs["precision"] is single_precision
+        hardware_options = cast("SimpleNamespace", kwargs["hardwareOptions"])
+        assert vars(hardware_options) == {
+            "preprocessingThreads": -1,
+            "batchSize": 256,
+            "batchesPerGpu": 2,
+        }
         return [
             [energy for _, energy in AllChem.MMFFOptimizeMoleculeConfs(molecule, numThreads=1, maxIters=max_iters)]
             for molecule in molecules
@@ -105,7 +126,10 @@ def test_nvmolkit_backend_runs_complete_generation_pipeline(monkeypatch: pytest.
     monkeypatch.setattr("openconf.relax.import_module", import_module)
     monkeypatch.setattr(
         "openconf._nvmolkit.import_module",
-        lambda name: SimpleNamespace(PrecisionMode=SimpleNamespace(SINGLE=single_precision)),
+        lambda name: SimpleNamespace(
+            PrecisionMode=SimpleNamespace(SINGLE=single_precision),
+            HardwareOptions=make_hardware_options,
+        ),
     )
     config = ConformerConfig(
         backend="nvmolkit",

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdDistGeom
 
-from ._nvmolkit import precision_kwargs
+from ._nvmolkit import hardware_options_kwargs, precision_kwargs
 from ._runtime import _NVMOLKIT_EMBED_IMPORTED_BEFORE_RDKIT
 from .exceptions import OpenConfValueError
 
@@ -97,6 +97,7 @@ class NvMolKitEmbedder:
             params=params,
             confsPerMolecule=n_confs,
             maxIterations=-1,
+            **hardware_options_kwargs("etkdg"),
             **precision_kwargs(self.precision),
         )
         return [[conformer.GetId() for conformer in mol.GetConformers()] for mol in mols]
