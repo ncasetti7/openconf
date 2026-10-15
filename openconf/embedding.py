@@ -40,7 +40,8 @@ class NvMolKitEmbedder:
         Raises:
             OpenConfValueError: molecule has disconnected fragments or nvMolKit is unavailable
         """
-        if len(Chem.GetMolFrags(mol)) > 1:
+        isolated_mol = Chem.Mol(mol)
+        if len(Chem.GetMolFrags(isolated_mol)) > 1:
             raise OpenConfValueError("nvMolKit embedding does not support separate fragment embedding.")
 
         try:
@@ -50,7 +51,6 @@ class NvMolKitEmbedder:
 
         embed_molecules = cast("Callable[..., None]", module.EmbedMolecules)
         params.useRandomCoords = True
-        isolated_mol = Chem.Mol(mol)
         embed_molecules(
             molecules=[isolated_mol],
             params=params,
